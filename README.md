@@ -55,8 +55,31 @@ supabase secrets set ANTHROPIC_MODEL=claude-opus-5-5 AI_EFFORT_CHAT=low AI_EFFOR
 ```
 A chave fica só no servidor. Teste em **Configurações → Testar conexão da IA**.
 
-### 4. Equipe
-**Configurações → Equipe:** adicione corretores por e-mail. Eles precisam criar a conta antes. Os papéis são owner, admin, gestor, corretor e assistente. A RLS isola cada imobiliária.
+### 4. Superadmin (dono da plataforma)
+1. Crie sua conta normalmente em `/index.html`.
+2. No SQL Editor, rode **uma vez** com o seu e-mail:
+   ```sql
+   insert into public.platform_admins (user_id)
+   select id from auth.users where lower(email) = lower('SEU_EMAIL')
+   on conflict do nothing;
+   ```
+3. Acesse `/admin.html`. O link **♛ Superadmin** também aparece no menu do app.
+
+**No console:**
+- **Clientes:** cadastrar imobiliária com plano, valor, limite de usuários, teste grátis e e-mail do dono. O link de acesso já sai pronto para WhatsApp.
+- **Assinatura:** ativar, marcar inadimplente, suspender, cancelar e estender o trial.
+- **Métricas:** MRR/ARR, trials vencendo e uso de cada cliente (leads, imóveis, vendas, última atividade).
+- **Outras abas:** planos, outros superadmins e configurações (auto-cadastro on/off, dias de teste, plano padrão, contato comercial).
+
+**Regras:**
+- O cliente convidado cria a conta com o e-mail cadastrado e entra direto como dono da imobiliária.
+- Suspenso, cancelado ou trial vencido: o acesso é bloqueado na hora e os dados ficam preservados.
+- Inadimplente continua acessando, com aviso.
+- O cliente não consegue alterar plano, status, valor ou trial; uma trava no banco impede.
+- Por LGPD, o superadmin vê apenas números agregados, nunca os leads dos clientes.
+
+### 5. Equipe
+**Configurações → Equipe:** adicione corretores por e-mail. Quem ainda não tem conta recebe um link de convite. Os papéis são owner, admin, gestor, corretor e assistente. A RLS isola cada imobiliária.
 
 ---
 
@@ -72,6 +95,7 @@ Rodando localmente: `python3 -m http.server 8080` na raiz e acesse `http://local
 index.html              Landing + login/cadastro
 app.html                Plataforma (SPA com rotas por hash)
 office.html             Escritório 3D
+admin.html              Console do superadmin (clientes, planos, assinaturas)
 api/config.js           Vercel: expõe SUPABASE_URL/ANON_KEY
 assets/css/app.css      Design system (dark/light)
 assets/js/
@@ -95,7 +119,9 @@ supabase/
 | `fn_match_unidades(lead, limit)` | Ranking de unidades com motivos e bloqueios |
 | `fn_deal_health(deal)` | Probabilidade, saúde, próxima ação (gatilho na troca de etapa) |
 | `fn_recalcular_tudo(org)` | Recalcula a org inteira (agende com pg_cron) |
-| `fn_onboard`, `fn_convidar`, `fn_seed_demo` | Onboarding, equipe, dados demo |
+| `fn_onboard`, `fn_convidar`, `fn_seed_demo` | Onboarding (trial), equipe com convite, dados demo |
+| `fn_minha_conta` | Situação da conta no login (superadmin, status, trial) |
+| `fn_admin_*` | Console: criar/listar clientes, métricas, convites, superadmins, exclusão |
 
 Views: `vw_dashboard`, `vw_funil`, `vw_ranking` (com `security_invoker`, respeitam a RLS).
 

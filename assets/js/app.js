@@ -49,8 +49,14 @@ function header() {
   $('#me-org').textContent = db.org?.nome || '—';
   $('#me-avatar').textContent = initials(db.profile?.nome || db.user?.email);
   const b = $('#mode-banner');
+  if (db.isSuperadmin) $('#nav-admin').classList.remove('hide');
   if (db.mode === 'local') {
     b.innerHTML = `<div class="mode-banner">◆ Modo local (dados no seu navegador). Conecte o Supabase em <a href="#/ajustes" style="color:inherit;text-decoration:underline">Configurações</a> para usar com a equipe.</div>`;
+  } else if (db.org?.status === 'trial' && db.org?.trial_ate) {
+    const dias = Math.ceil((new Date(db.org.trial_ate + 'T23:59:59') - Date.now()) / 864e5);
+    b.innerHTML = `<div class="mode-banner">◆ Teste grátis: ${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'} (até ${new Date(db.org.trial_ate + 'T12:00').toLocaleDateString('pt-BR')}). ${esc(db.conta?.contato_suporte ? 'Assine com: ' + db.conta.contato_suporte : 'Fale com o suporte para assinar.')}</div>`;
+  } else if (db.org?.status === 'inadimplente') {
+    b.innerHTML = `<div class="mode-banner" style="background:var(--red-soft);color:var(--red)">◆ Pagamento pendente. Regularize para evitar a suspensão do acesso.${db.conta?.contato_suporte ? ' Contato: ' + esc(db.conta.contato_suporte) : ''}</div>`;
   } else b.innerHTML = '';
 }
 
@@ -103,10 +109,32 @@ function globalSearch() {
   document.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); inp.focus(); } });
 }
 
+function telaBloqueio(titulo, texto) {
+  document.body.innerHTML = `<div style="min-height:100vh;display:grid;place-items:center;padding:16px">
+    <div class="card" style="max-width:460px;text-align:center;padding:28px"><div class="brand-mark" style="margin:0 auto 14px">MI</div>
+    <h2>${esc(titulo)}</h2><p class="muted mt-s">${esc(texto)}</p>
+    ${db.conta?.contato_suporte ? `<p class="mt"><b>${esc(db.conta.contato_suporte)}</b></p>` : ''}
+    <div class="row mt" style="justify-content:center">${db.isSuperadmin ? '<a class="btn primary" href="admin.html">Console superadmin</a>' : ''}<button class="btn" id="sair">Sair</button></div></div></div>`;
+  document.getElementById('sair').onclick = () => db.signOut();
+}
+
 async function boot() {
   const ok = await db.init({ requireAuth: true });
   if (!ok) return;
-  if (db.mode === 'supabase' && !db.orgId) await onboarding();
+  if (db.mode === 'supabase') {
+    const msg = {
+      suspenso: ['Acesso suspenso', 'O acesso desta imobiliária está suspenso. Fale com o suporte para reativar.'],
+      cancelado: ['Assinatura cancelada', 'Esta assinatura foi cancelada. Fale com o suporte para reativar seus dados.'],
+      trial_vencido: ['Seu teste grátis terminou', 'Gostou? Assine para continuar vendendo com a MinhaImob. Seus dados estão preservados.'],
+    }[db.bloqueio];
+    if (msg) return telaBloqueio(...msg);
+    if (!db.orgId) {
+      if (db.isSuperadmin) { location.href = 'admin.html'; return; }
+      if (db.conta && db.conta.permitir_auto_cadastro === false) return telaBloqueio('Aguardando convite', 'Sua conta foi criada, mas ainda não está vinculada a uma imobiliária. Peça ao administrador para cadastrar seu e-mail.');
+      await onboarding();
+      header();
+    }
+  }
   if (db.mode === 'local' && !db.store.t('empreendimentos').length && !localStorage.getItem('mi_seeded')) {
     await db.rpc('fn_seed_demo'); localStorage.setItem('mi_seeded', '1');
   }

@@ -87,11 +87,84 @@ do $$ begin
     foreign key (user_id) references public.profiles(id) on delete cascade;
 exception when duplicate_object then null; end $$;
 
+-- ---------------------------------------------------------------------------
+-- SaaS: assinatura da imobiliária + tabelas da plataforma (superadmin)
+-- ---------------------------------------------------------------------------
+alter table public.orgs add column if not exists status text not null default 'ativo';
+alter table public.orgs add column if not exists trial_ate date;
+alter table public.orgs add column if not exists valor_mensal numeric(12,2) default 0;
+alter table public.orgs add column if not exists limite_usuarios int;
+alter table public.orgs add column if not exists contato_nome text;
+alter table public.orgs add column if not exists contato_email text;
+alter table public.orgs add column if not exists contato_telefone text;
+alter table public.orgs add column if not exists observacoes text;
+alter table public.orgs add column if not exists criado_por uuid;
+do $$ begin
+  alter table public.orgs add constraint orgs_status_chk
+    check (status in ('trial','ativo','inadimplente','suspenso','cancelado'));
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.platform_admins (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.planos (
+  id              text primary key,
+  nome            text not null,
+  valor_mensal    numeric(12,2) not null default 0,
+  limite_usuarios int,
+  limite_unidades int,
+  recursos        jsonb not null default '[]'::jsonb,
+  ativo           boolean not null default true,
+  ordem           int default 0
+);
+insert into public.planos (id, nome, valor_mensal, limite_usuarios, limite_unidades, recursos, ordem) values
+  ('starter',    'Starter',    197,  3,    300,  '["CRM e pipeline","Destrinchar book (local)","Simulador CEF","Academia"]', 1),
+  ('pro',        'Pro',        497,  10,   2000, '["Tudo do Starter","IA Claude (book e agentes)","Escritório 3D","Anúncios com IA"]', 2),
+  ('enterprise', 'Enterprise', 1490, null, null, '["Tudo do Pro","Usuários ilimitados","Suporte prioritário","Onboarding dedicado"]', 3)
+on conflict (id) do nothing;
+
+create table if not exists public.platform_config (
+  id                     int primary key default 1 check (id = 1),
+  permitir_auto_cadastro boolean not null default true,
+  trial_dias             int not null default 14,
+  plano_padrao           text not null default 'starter',
+  contato_suporte        text,
+  updated_at             timestamptz not null default now()
+);
+insert into public.platform_config (id) values (1) on conflict (id) do nothing;
+
+create table if not exists public.org_convites (
+  id            uuid primary key default gen_random_uuid(),
+  org_id        uuid not null references public.orgs(id) on delete cascade,
+  email         text not null,
+  role          user_role not null default 'corretor',
+  convidado_por uuid,
+  created_at    timestamptz not null default now(),
+  aceito_em     timestamptz
+);
+create unique index if not exists idx_convite_org_email on public.org_convites(org_id, lower(email));
+
+create or replace function public.fn_is_superadmin()
+returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists(select 1 from public.platform_admins where user_id = auth.uid());
+$$;
+
+-- Org liberada: ativa, inadimplente (carência) ou trial dentro do prazo
+create or replace function public.fn_org_liberada(p_status text, p_trial date)
+returns boolean language sql stable as $$
+  select p_status in ('ativo','inadimplente') or (p_status = 'trial' and (p_trial is null or p_trial >= current_date));
+$$;
+
 -- Helper SECURITY DEFINER: evita recursão de RLS em org_members
 create or replace function public.fn_my_orgs()
 returns setof uuid
 language sql stable security definer set search_path = public as $$
-  select org_id from public.org_members where user_id = auth.uid() and active;
+  select m.org_id from public.org_members m
+  join public.orgs o on o.id = m.org_id
+  where m.user_id = auth.uid() and m.active and public.fn_org_liberada(o.status, o.trial_ate);
 $$;
 
 create or replace function public.fn_is_manager(p_org uuid)
@@ -1048,6 +1121,13 @@ begin
   insert into public.profiles (id, nome, email)
   values (new.id, coalesce(new.raw_user_meta_data->>'nome', split_part(new.email, '@', 1)), new.email)
   on conflict (id) do nothing;
+  -- convites pendentes (cliente cadastrado pelo superadmin ou corretor convidado)
+  insert into public.org_members (org_id, user_id, role)
+    select c.org_id, new.id, c.role from public.org_convites c
+    where lower(c.email) = lower(new.email) and c.aceito_em is null
+  on conflict (org_id, user_id) do update set active = true, role = excluded.role;
+  update public.org_convites set aceito_em = now()
+    where lower(email) = lower(new.email) and aceito_em is null;
   return new;
 end $$;
 drop trigger if exists on_auth_user_created on auth.users;
@@ -1057,17 +1137,24 @@ create trigger on_auth_user_created after insert on auth.users
 -- Cria a imobiliária do usuário logado (chamado pelo app no 1º login)
 create or replace function public.fn_onboard(p_nome text, p_cidade text default null, p_uf text default null)
 returns uuid language plpgsql security definer set search_path = public as $$
-declare v_org uuid; v_slug text;
+declare v_org uuid; v_slug text; cfg public.platform_config%rowtype;
 begin
   if auth.uid() is null then raise exception 'não autenticado'; end if;
-  select org_id into v_org from public.org_members where user_id = auth.uid() and active limit 1;
+  select org_id into v_org from public.org_members where user_id = auth.uid() and active order by created_at limit 1;
   if v_org is not null then return v_org; end if;
+  select * into cfg from public.platform_config where id = 1;
+  if not coalesce(cfg.permitir_auto_cadastro, true) and not public.fn_is_superadmin() then
+    raise exception 'Cadastro de novas imobiliárias somente por convite. Fale com o suporte.';
+  end if;
 
   insert into public.profiles (id, email) select auth.uid(), email from auth.users where id = auth.uid()
     on conflict (id) do nothing;
 
   v_slug := regexp_replace(public.fn_norm(p_nome), '[^a-z0-9]+', '-', 'g') || '-' || substr(md5(random()::text), 1, 5);
-  insert into public.orgs (nome, slug, cidade, uf) values (p_nome, v_slug, p_cidade, upper(p_uf)) returning id into v_org;
+  insert into public.orgs (nome, slug, cidade, uf, status, trial_ate, plano, criado_por)
+    values (p_nome, v_slug, p_cidade, upper(p_uf), 'trial', current_date + coalesce(cfg.trial_dias, 14),
+            coalesce(cfg.plano_padrao, 'starter'), auth.uid())
+    returning id into v_org;
   insert into public.org_members (org_id, user_id, role) values (v_org, auth.uid(), 'owner');
   insert into public.metas (org_id, user_id, competencia, vgv_meta, unidades_meta, leads_meta, visitas_meta)
     values (v_org, auth.uid(), date_trunc('month', current_date)::date, 2000000, 8, 120, 30)
@@ -1075,18 +1162,45 @@ begin
   return v_org;
 end $$;
 
--- Adiciona um usuário já cadastrado à imobiliária
+-- Vincula e-mail a uma org: membro imediato se já tem conta, senão convite pendente
+create or replace function public._fn_vincular(p_org uuid, p_email text, p_role user_role, p_checar_limite boolean default true)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_uid uuid; v_lim int; v_qtd int;
+begin
+  p_email := lower(trim(p_email));
+  if p_email is null or p_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then raise exception 'e-mail inválido'; end if;
+  if p_checar_limite then
+    select limite_usuarios into v_lim from public.orgs where id = p_org;
+    select (select count(*) from public.org_members where org_id = p_org and active)
+         + (select count(*) from public.org_convites where org_id = p_org and aceito_em is null) into v_qtd;
+    if v_lim is not null and v_qtd >= v_lim then
+      raise exception 'Limite de % usuários do plano atingido.', v_lim;
+    end if;
+  end if;
+  select id into v_uid from auth.users where lower(email) = p_email;
+  if v_uid is not null then
+    insert into public.profiles (id, email, nome) values (v_uid, p_email, split_part(p_email, '@', 1)) on conflict (id) do nothing;
+    insert into public.org_members (org_id, user_id, role) values (p_org, v_uid, p_role)
+      on conflict (org_id, user_id) do update set role = excluded.role, active = true;
+    return 'ok';
+  end if;
+  insert into public.org_convites (org_id, email, role, convidado_por) values (p_org, p_email, p_role, auth.uid())
+    on conflict (org_id, lower(email)) do update set role = excluded.role, aceito_em = null, created_at = now();
+  return 'convite';
+end $$;
+revoke all on function public._fn_vincular(uuid, text, user_role, boolean) from public, anon, authenticated;
+
 create or replace function public.fn_convidar(p_org uuid, p_email text, p_role user_role default 'corretor')
 returns text language plpgsql security definer set search_path = public as $$
-declare v_uid uuid;
 begin
-  if not public.fn_is_manager(p_org) then raise exception 'apenas gestores podem convidar'; end if;
-  select id into v_uid from auth.users where lower(email) = lower(p_email);
-  if v_uid is null then return 'Usuário não encontrado. Peça para criar a conta em /index.html e convide novamente.'; end if;
-  insert into public.profiles (id, email, nome) values (v_uid, p_email, split_part(p_email, '@', 1)) on conflict (id) do nothing;
-  insert into public.org_members (org_id, user_id, role) values (p_org, v_uid, p_role)
-    on conflict (org_id, user_id) do update set role = excluded.role, active = true;
-  return 'ok';
+  if not (public.fn_is_manager(p_org) and p_org in (select public.fn_my_orgs())) and not public.fn_is_superadmin() then
+    raise exception 'apenas gestores podem convidar';
+  end if;
+  if p_role = 'owner' and not public.fn_is_superadmin()
+     and not exists (select 1 from public.org_members where org_id = p_org and user_id = auth.uid() and role = 'owner') then
+    raise exception 'apenas o dono pode adicionar outro dono';
+  end if;
+  return public._fn_vincular(p_org, p_email, p_role, true);
 end $$;
 
 -- ============================================================================
@@ -1255,20 +1369,23 @@ alter table public.org_members enable row level security;
 alter table public.audit_log enable row level security;
 
 drop policy if exists orgs_sel on public.orgs;
-create policy orgs_sel on public.orgs for select using (id in (select public.fn_my_orgs()));
+create policy orgs_sel on public.orgs for select using (id in (select public.fn_my_orgs()) or public.fn_is_superadmin());
 drop policy if exists orgs_upd on public.orgs;
-create policy orgs_upd on public.orgs for update using (public.fn_is_manager(id)) with check (public.fn_is_manager(id));
+create policy orgs_upd on public.orgs for update
+  using (public.fn_is_superadmin() or (public.fn_is_manager(id) and id in (select public.fn_my_orgs())))
+  with check (public.fn_is_superadmin() or (public.fn_is_manager(id) and id in (select public.fn_my_orgs())));
 
 drop policy if exists prof_sel on public.profiles;
 create policy prof_sel on public.profiles for select using (
-  id = auth.uid() or id in (select m.user_id from public.org_members m where m.org_id in (select public.fn_my_orgs())));
+  id = auth.uid() or public.fn_is_superadmin()
+  or id in (select m.user_id from public.org_members m where m.org_id in (select public.fn_my_orgs())));
 drop policy if exists prof_ins on public.profiles;
 create policy prof_ins on public.profiles for insert with check (id = auth.uid());
 drop policy if exists prof_upd on public.profiles;
 create policy prof_upd on public.profiles for update using (id = auth.uid()) with check (id = auth.uid());
 
 drop policy if exists mem_sel on public.org_members;
-create policy mem_sel on public.org_members for select using (org_id in (select public.fn_my_orgs()));
+create policy mem_sel on public.org_members for select using (org_id in (select public.fn_my_orgs()) or public.fn_is_superadmin());
 drop policy if exists mem_mng on public.org_members;
 create policy mem_mng on public.org_members for all using (public.fn_is_manager(org_id)) with check (public.fn_is_manager(org_id));
 
@@ -1371,5 +1488,214 @@ grant execute on function public.fn_recalcular_tudo(uuid) to authenticated;
 
 -- Opcional (pg_cron): recálculo automático a cada hora
 -- select cron.schedule('minhaimob-recalc', '0 * * * *', $$select public.fn_recalcular_tudo()$$);
+
+-- ============================================================================
+-- 27. SUPERADMIN / SaaS — gestão de clientes da plataforma
+-- ============================================================================
+-- Cliente não altera a própria assinatura (status, plano, trial, valor, limite)
+create or replace function public.trg_orgs_protege_assinatura()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if public.fn_is_superadmin() or auth.uid() is null then return new; end if;
+  if new.status is distinct from old.status or new.plano is distinct from old.plano
+     or new.trial_ate is distinct from old.trial_ate or new.valor_mensal is distinct from old.valor_mensal
+     or new.limite_usuarios is distinct from old.limite_usuarios or new.slug is distinct from old.slug then
+    raise exception 'Somente o administrador da plataforma altera dados da assinatura.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists trg_orgs_protege on public.orgs;
+create trigger trg_orgs_protege before update on public.orgs
+  for each row execute function public.trg_orgs_protege_assinatura();
+
+alter table public.platform_admins enable row level security;
+alter table public.planos enable row level security;
+alter table public.platform_config enable row level security;
+alter table public.org_convites enable row level security;
+
+drop policy if exists pa_sel on public.platform_admins;
+create policy pa_sel on public.platform_admins for select using (public.fn_is_superadmin());
+drop policy if exists planos_sel on public.planos;
+create policy planos_sel on public.planos for select using (ativo or public.fn_is_superadmin());
+drop policy if exists planos_adm on public.planos;
+create policy planos_adm on public.planos for all using (public.fn_is_superadmin()) with check (public.fn_is_superadmin());
+drop policy if exists cfg_sel on public.platform_config;
+create policy cfg_sel on public.platform_config for select using (auth.uid() is not null);
+drop policy if exists cfg_upd on public.platform_config;
+create policy cfg_upd on public.platform_config for update using (public.fn_is_superadmin()) with check (public.fn_is_superadmin());
+drop policy if exists conv_sel on public.org_convites;
+create policy conv_sel on public.org_convites for select using (
+  public.fn_is_superadmin() or (org_id in (select public.fn_my_orgs()) and public.fn_is_manager(org_id)));
+drop policy if exists conv_del on public.org_convites;
+create policy conv_del on public.org_convites for delete using (
+  public.fn_is_superadmin() or (org_id in (select public.fn_my_orgs()) and public.fn_is_manager(org_id)));
+
+-- Situação da conta do usuário logado (usado no login, ignora bloqueio)
+create or replace function public.fn_minha_conta()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare r record; cfg public.platform_config%rowtype;
+begin
+  if auth.uid() is null then return null; end if;
+  select * into cfg from public.platform_config where id = 1;
+  select o.id, o.nome, o.status, o.trial_ate, o.plano, o.cidade, o.uf, m.role
+    into r from public.org_members m join public.orgs o on o.id = m.org_id
+    where m.user_id = auth.uid() and m.active order by m.created_at limit 1;
+  return jsonb_build_object(
+    'is_superadmin', public.fn_is_superadmin(),
+    'permitir_auto_cadastro', coalesce(cfg.permitir_auto_cadastro, true),
+    'contato_suporte', cfg.contato_suporte,
+    'org', case when r.id is null then null else jsonb_build_object(
+      'id', r.id, 'nome', r.nome, 'status', r.status, 'trial_ate', r.trial_ate, 'plano', r.plano,
+      'cidade', r.cidade, 'uf', r.uf, 'liberada', public.fn_org_liberada(r.status, r.trial_ate)) end,
+    'role', r.role);
+end $$;
+
+create or replace function public._fn_exigir_superadmin()
+returns void language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.fn_is_superadmin() then raise exception 'acesso restrito ao administrador da plataforma'; end if;
+end $$;
+
+-- Cria cliente (imobiliária) e vincula/convida o dono
+create or replace function public.fn_admin_criar_cliente(p jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_org uuid; v_slug text; v_plano public.planos%rowtype; v_status text; v_vinc text := null; cfg public.platform_config%rowtype;
+begin
+  perform public._fn_exigir_superadmin();
+  if coalesce(trim(p->>'nome'), '') = '' then raise exception 'nome obrigatório'; end if;
+  select * into cfg from public.platform_config where id = 1;
+  select * into v_plano from public.planos where id = coalesce(p->>'plano', cfg.plano_padrao);
+  v_status := coalesce(p->>'status', 'trial');
+  v_slug := regexp_replace(public.fn_norm(p->>'nome'), '[^a-z0-9]+', '-', 'g') || '-' || substr(md5(random()::text), 1, 5);
+  insert into public.orgs (nome, slug, cnpj, cidade, uf, plano, status, trial_ate, valor_mensal, limite_usuarios,
+                           contato_nome, contato_email, contato_telefone, observacoes, criado_por)
+  values (trim(p->>'nome'), v_slug, p->>'cnpj', p->>'cidade', upper(nullif(p->>'uf', '')), coalesce(v_plano.id, p->>'plano'),
+          v_status,
+          case when v_status = 'trial' then current_date + coalesce((p->>'trial_dias')::int, cfg.trial_dias, 14) end,
+          coalesce((p->>'valor_mensal')::numeric, v_plano.valor_mensal, 0),
+          coalesce((p->>'limite_usuarios')::int, v_plano.limite_usuarios),
+          p->>'contato_nome', lower(nullif(p->>'contato_email', '')), p->>'contato_telefone', p->>'observacoes', auth.uid())
+  returning id into v_org;
+  insert into public.metas (org_id, competencia, vgv_meta) values (v_org, date_trunc('month', current_date)::date, 2000000)
+    on conflict do nothing;
+  if coalesce(p->>'owner_email', p->>'contato_email', '') <> '' then
+    v_vinc := public._fn_vincular(v_org, coalesce(nullif(p->>'owner_email', ''), p->>'contato_email'), 'owner', false);
+  end if;
+  return jsonb_build_object('org_id', v_org, 'slug', v_slug, 'dono', v_vinc);
+end $$;
+
+create or replace function public.fn_admin_convidar(p_org uuid, p_email text, p_role user_role default 'owner')
+returns text language plpgsql security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  return public._fn_vincular(p_org, p_email, p_role, false);
+end $$;
+
+-- Lista de clientes com métricas de uso (agregadas — sem dados pessoais dos leads)
+create or replace function public.fn_admin_clientes()
+returns table (
+  id uuid, nome text, slug text, cnpj text, cidade text, uf text, status text, plano text, valor_mensal numeric,
+  trial_ate date, limite_usuarios int, contato_nome text, contato_email text, contato_telefone text, observacoes text,
+  created_at timestamptz, liberada boolean, donos text, usuarios bigint, convites_pendentes bigint, leads bigint,
+  empreendimentos bigint, unidades bigint, negocios_abertos bigint, vendas bigint, vgv_vendido numeric, ultima_atividade timestamptz
+) language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  return query
+  select o.id, o.nome, o.slug, o.cnpj, o.cidade, o.uf::text, o.status, o.plano, o.valor_mensal, o.trial_ate, o.limite_usuarios,
+    o.contato_nome, o.contato_email, o.contato_telefone, o.observacoes, o.created_at,
+    public.fn_org_liberada(o.status, o.trial_ate),
+    (select string_agg(coalesce(pr.email, ''), ', ') from public.org_members m join public.profiles pr on pr.id = m.user_id where m.org_id = o.id and m.role = 'owner' and m.active),
+    (select count(*) from public.org_members m where m.org_id = o.id and m.active),
+    (select count(*) from public.org_convites c where c.org_id = o.id and c.aceito_em is null),
+    (select count(*) from public.leads l where l.org_id = o.id),
+    (select count(*) from public.empreendimentos e where e.org_id = o.id),
+    (select count(*) from public.unidades u where u.org_id = o.id),
+    (select count(*) from public.deals d where d.org_id = o.id and d.stage not in ('ganho','perdido')),
+    (select count(*) from public.deals d where d.org_id = o.id and d.stage = 'ganho'),
+    (select coalesce(sum(coalesce(d.valor_proposta, d.valor)), 0) from public.deals d where d.org_id = o.id and d.stage = 'ganho'),
+    greatest((select max(a.created_at) from public.activities a where a.org_id = o.id),
+             (select max(l.updated_at) from public.leads l where l.org_id = o.id))
+  from public.orgs o order by o.created_at desc;
+end $$;
+
+create or replace function public.fn_admin_metricas()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  return (select jsonb_build_object(
+    'clientes', count(*),
+    'ativos', count(*) filter (where status = 'ativo'),
+    'trial', count(*) filter (where status = 'trial' and public.fn_org_liberada(status, trial_ate)),
+    'trial_vencido', count(*) filter (where status = 'trial' and not public.fn_org_liberada(status, trial_ate)),
+    'trial_vencendo_7d', count(*) filter (where status = 'trial' and trial_ate between current_date and current_date + 7),
+    'inadimplentes', count(*) filter (where status = 'inadimplente'),
+    'suspensos', count(*) filter (where status = 'suspenso'),
+    'cancelados', count(*) filter (where status = 'cancelado'),
+    'mrr', coalesce(sum(valor_mensal) filter (where status in ('ativo','inadimplente')), 0),
+    'mrr_potencial_trial', coalesce(sum(valor_mensal) filter (where status = 'trial'), 0),
+    'usuarios', (select count(*) from public.org_members where active),
+    'novos_30d', count(*) filter (where created_at > now() - interval '30 days'))
+  from public.orgs);
+end $$;
+
+create or replace function public.fn_admin_superadmins()
+returns table (user_id uuid, email text, nome text, created_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  return query select pa.user_id, u.email::text, pr.nome, pa.created_at
+    from public.platform_admins pa join auth.users u on u.id = pa.user_id left join public.profiles pr on pr.id = pa.user_id
+    order by pa.created_at;
+end $$;
+
+create or replace function public.fn_admin_add_superadmin(p_email text)
+returns text language plpgsql security definer set search_path = public as $$
+declare v_uid uuid;
+begin
+  perform public._fn_exigir_superadmin();
+  select id into v_uid from auth.users where lower(email) = lower(trim(p_email));
+  if v_uid is null then return 'Usuário não encontrado: a pessoa precisa criar a conta primeiro.'; end if;
+  insert into public.platform_admins (user_id) values (v_uid) on conflict do nothing;
+  return 'ok';
+end $$;
+
+create or replace function public.fn_admin_remove_superadmin(p_user uuid)
+returns text language plpgsql security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  if (select count(*) from public.platform_admins) <= 1 then raise exception 'não é possível remover o último superadmin'; end if;
+  delete from public.platform_admins where user_id = p_user;
+  return 'ok';
+end $$;
+
+-- Exclusão definitiva (exige confirmar o slug)
+create or replace function public.fn_admin_excluir_cliente(p_org uuid, p_confirmar_slug text)
+returns text language plpgsql security definer set search_path = public as $$
+begin
+  perform public._fn_exigir_superadmin();
+  if not exists (select 1 from public.orgs where id = p_org and slug = p_confirmar_slug) then
+    raise exception 'slug de confirmação não confere';
+  end if;
+  delete from public.orgs where id = p_org;
+  return 'ok';
+end $$;
+
+-- Primeiro superadmin: crie sua conta no app e rode UMA vez (troque o e-mail):
+--   insert into public.platform_admins (user_id)
+--   select id from auth.users where lower(email) = lower('SEU_EMAIL_AQUI')
+--   on conflict do nothing;
+
+grant execute on function public.fn_is_superadmin() to authenticated;
+grant execute on function public.fn_minha_conta() to authenticated;
+grant execute on function public.fn_admin_criar_cliente(jsonb) to authenticated;
+grant execute on function public.fn_admin_convidar(uuid, text, user_role) to authenticated;
+grant execute on function public.fn_admin_clientes() to authenticated;
+grant execute on function public.fn_admin_metricas() to authenticated;
+grant execute on function public.fn_admin_superadmins() to authenticated;
+grant execute on function public.fn_admin_add_superadmin(text) to authenticated;
+grant execute on function public.fn_admin_remove_superadmin(uuid) to authenticated;
+grant execute on function public.fn_admin_excluir_cliente(uuid, text) to authenticated;
+revoke execute on function public._fn_exigir_superadmin() from public, anon, authenticated;
 
 -- FIM

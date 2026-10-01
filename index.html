@@ -58,7 +58,8 @@
       $('#sbf').onsubmit = (e) => { e.preventDefault(); saveConfig({ SUPABASE_URL: e.target.u.value.trim().replace(/\/$/, ''), SUPABASE_ANON_KEY: e.target.k.value.trim() }); localStorage.removeItem('mi_force_local'); location.reload(); };
     }
 
-    function authView(mode = 'login') {
+    const qs = new URLSearchParams(location.search);
+    function authView(mode = qs.get('convite') ? 'signup' : 'login') {
       const t = { login: ['Entrar', 'Acesse sua imobiliária'], signup: ['Criar conta', 'Comece a vender mais hoje'], reset: ['Recuperar senha', 'Enviaremos um link para o seu e-mail'] }[mode];
       box.innerHTML = `<h2>${t[0]}</h2><p class="muted mt-s">${t[1]}</p><form id="af" class="mt">
         ${mode === 'signup' ? '<div class="field"><label>Nome</label><input name="nome" required /></div>' : ''}
@@ -67,6 +68,8 @@
         <button class="btn primary block">${t[0]}</button></form>
         <div class="row between mt" style="font-size:13px">${mode === 'login' ? '<a href="#" data-m="signup">Criar conta</a><a href="#" data-m="reset">Esqueci a senha</a>' : '<a href="#" data-m="login">← Já tenho conta</a>'}</div>
         <hr/><button class="btn ghost block sm" id="local">Explorar em modo demonstração (sem conta)</button>`;
+      if (qs.get('email')) { const em = box.querySelector('[name="email"]'); if (em) em.value = qs.get('email'); }
+      if (qs.get('convite') && mode === 'signup') box.querySelector('p').textContent = 'Sua imobiliária já está cadastrada. Crie sua senha com o e-mail convidado para entrar.';
       box.querySelectorAll('[data-m]').forEach((a) => a.onclick = (e) => { e.preventDefault(); authView(a.dataset.m); });
       $('#local').onclick = () => { localStorage.setItem('mi_force_local', '1'); location.href = 'app.html'; };
       $('#af').onsubmit = async (e) => {

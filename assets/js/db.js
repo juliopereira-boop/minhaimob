@@ -57,6 +57,9 @@ export const db = {
   org: null,
   orgId: null,
   role: 'owner',
+  conta: null,
+  isSuperadmin: false,
+  bloqueio: null,
   listeners: new Set(),
 
   async init({ requireAuth = true } = {}) {
@@ -71,12 +74,21 @@ export const db = {
         if (requireAuth) { location.href = 'index.html'; return false; }
         return true;
       }
-      const [{ data: prof }, { data: mem }] = await Promise.all([
+      const [{ data: prof }, { data: conta, error: cErr }] = await Promise.all([
         this.sb.from('profiles').select('*').eq('id', this.user.id).maybeSingle(),
-        this.sb.from('org_members').select('org_id, role, orgs(*)').eq('user_id', this.user.id).eq('active', true).limit(1),
+        this.sb.rpc('fn_minha_conta'),
       ]);
+      if (cErr) console.warn('fn_minha_conta indisponível — rode o schema.sql atualizado', cErr);
       this.profile = prof || { id: this.user.id, nome: this.user.email?.split('@')[0], email: this.user.email };
-      if (mem?.length) { this.orgId = mem[0].org_id; this.role = mem[0].role; this.org = mem[0].orgs; }
+      this.conta = conta || { permitir_auto_cadastro: true };
+      this.isSuperadmin = !!conta?.is_superadmin;
+      if (conta?.org) {
+        this.orgId = conta.org.id; this.role = conta.role; this.org = conta.org;
+        if (conta.org.liberada) {
+          const { data: org } = await this.sb.from('orgs').select('*').eq('id', conta.org.id).maybeSingle();
+          if (org) this.org = { ...org, liberada: true };
+        } else this.bloqueio = conta.org.status === 'trial' ? 'trial_vencido' : conta.org.status;
+      }
       this.sb.auth.onAuthStateChange((ev) => { if (ev === 'SIGNED_OUT') location.href = 'index.html'; });
       return true;
     }

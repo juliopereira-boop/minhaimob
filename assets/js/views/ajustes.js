@@ -1,4 +1,4 @@
-import { $, $$, esc, toast, modal, confirmBox, formData, brl, parseNum } from '../ui.js';
+import { $, $$, esc, toast, modal, confirmBox, formData, brl, parseNum, copy } from '../ui.js';
 import { CONFIG, saveConfig } from '../config.js';
 
 export async function render(el, ctx) {
@@ -40,7 +40,7 @@ supabase secrets set ANTHROPIC_API_KEY=sk-ant-...</div>
 
     ${db.mode === 'supabase' ? `<div class="card span2"><div class="card-head"><h3>Equipe · ${esc(db.org?.nome || '')}</h3><span class="badge b-gold">seu papel: ${esc(db.role)}</span></div>
       <div class="table-wrap"><table class="t"><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Ativo</th></tr></thead><tbody>${membros.map((m) => `<tr><td>${esc(m.profiles?.nome || '—')}</td><td>${esc(m.profiles?.email || '')}</td><td>${esc(m.role)}</td><td>${m.active ? '✓' : '—'}</td></tr>`).join('')}</tbody></table></div>
-      ${['owner', 'admin', 'gestor'].includes(db.role) ? `<form id="f-inv" class="row wrap mt"><input name="email" type="email" required placeholder="email@corretor.com" style="max-width:280px" /><select name="role" style="max-width:160px"><option value="corretor">Corretor</option><option value="assistente">Assistente</option><option value="gestor">Gestor</option><option value="admin">Admin</option></select><button class="btn primary sm">Adicionar à equipe</button></form><div class="hint">O usuário precisa ter criado a conta na tela de login antes.</div>` : ''}</div>` : ''}
+      ${['owner', 'admin', 'gestor'].includes(db.role) ? `<form id="f-inv" class="row wrap mt"><input name="email" type="email" required placeholder="email@corretor.com" style="max-width:280px" /><select name="role" style="max-width:160px"><option value="corretor">Corretor</option><option value="assistente">Assistente</option><option value="gestor">Gestor</option><option value="admin">Admin</option></select><button class="btn primary sm">Adicionar à equipe</button></form><div class="hint">Sem conta ainda? Um convite é criado e o link é copiado para você enviar.</div>` : ''}</div>` : ''}
   </div>`;
 
   $('#f-prof', el).onsubmit = async (e) => { e.preventDefault(); try { await db.updateProfile(formData(e.target)); toast('Perfil salvo', 'ok'); document.getElementById('me-name').textContent = db.profile.nome; } catch (err) { toast(err.message, 'err'); } };
@@ -60,5 +60,13 @@ supabase secrets set ANTHROPIC_API_KEY=sk-ant-...</div>
   const be = $('#b-exp', el); if (be) be.onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(db.store.data)], { type: 'application/json' })); a.download = `minhaimob-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); };
   const bi = $('#b-imp', el); if (bi) bi.onchange = async () => { try { const j = JSON.parse(await bi.files[0].text()); db.store.data = j; db.store.save(); toast('Backup importado', 'ok'); setTimeout(() => location.reload(), 500); } catch { toast('Arquivo inválido', 'err'); } };
   const br = $('#b-reset', el); if (br) br.onclick = async () => { if (await confirmBox('Apagar todos os dados locais deste navegador?', { danger: true, ok: 'Apagar' })) { db.store.reset(); localStorage.removeItem('mi_seeded'); location.reload(); } };
-  const fi = $('#f-inv', el); if (fi) fi.onsubmit = async (e) => { e.preventDefault(); const f = formData(e.target); try { const r = await db.rpc('fn_convidar', { p_org: db.orgId, p_email: f.email, p_role: f.role }); toast(r === 'ok' ? 'Corretor adicionado' : r, r === 'ok' ? 'ok' : 'err', 6000); if (r === 'ok') render(el, ctx); } catch (err) { toast(err.message, 'err'); } };
+  const fi = $('#f-inv', el); if (fi) fi.onsubmit = async (e) => { e.preventDefault(); const f = formData(e.target); try {
+      const r = await db.rpc('fn_convidar', { p_org: db.orgId, p_email: f.email, p_role: f.role });
+      if (r === 'convite') {
+        const link = `${location.origin}${location.pathname.replace(/app\.html$/, '')}index.html?convite=1&email=${encodeURIComponent(f.email)}`;
+        copy(`Você foi convidado para a equipe ${db.org?.nome || ''} na MinhaImob. Crie sua senha com o e-mail ${f.email}: ${link}`);
+        toast('Convite criado. A mensagem com o link foi copiada.', 'ok', 6000);
+      } else toast('Corretor adicionado à equipe', 'ok');
+      render(el, ctx);
+    } catch (err) { toast(err.message, 'err'); } };
 }
