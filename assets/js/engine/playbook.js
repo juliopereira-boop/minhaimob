@@ -168,6 +168,16 @@ export const TRILHAS = [
     ],
   },
   {
+    id: 'marketing', titulo: 'Marketing imobiliário que gera lead', nivel: 'Intermediário', min: 15, icone: '✎',
+    licoes: [
+      { t: 'Gancho, benefício, CTA', p: ['A primeira linha decide se a pessoa para de rolar: pergunta, número ou dor ("Ainda pagando aluguel?").', 'Benefício antes de característica: "receber a família no domingo" vende mais que "varanda gourmet".', 'Toda peça termina com uma ação única e simples: "comenta QUERO", "chama no direct".'] },
+      { t: 'Um público por anúncio', p: ['Investidor quer número: preço/m², valorização, aluguel estimado, liquidez.', 'Família quer segurança, lazer e escola perto; primeiro imóvel quer parcela e FGTS.', 'Não misture: um criativo para cada perfil converte mais e barateia o lead.'] },
+      { t: 'Velocidade e mensuração', p: ['Lead de anúncio esfria em minutos: responda em até 5 min.', 'Meça custo por lead e por visita, não só curtidas.', 'Use o gerador de Anúncios da plataforma como ponto de partida e teste 2 variações por semana.'] },
+    ],
+    exercicio: 'Crie 2 versões de anúncio do mesmo empreendimento: uma para investidor e outra para primeiro imóvel.',
+    quiz: [{ q: 'O que vem primeiro no anúncio?', o: ['Lista de lazer', 'Gancho que para a rolagem', 'Telefone'], r: 1 }],
+  },
+  {
     id: 'posvenda', titulo: 'Pós-venda e indicações', nivel: 'Base', min: 10, icone: '♥',
     licoes: [
       { t: 'Cliente feliz vende por você', p: ['Peça indicação no momento de maior alegria: aprovação do crédito e entrega das chaves.', 'Mande mensagem no aniversário de compra.', 'Indicação converte várias vezes mais que lead de anúncio.'] },

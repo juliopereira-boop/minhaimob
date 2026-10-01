@@ -2,7 +2,11 @@
 const DEFAULTS = {
   SUPABASE_URL: '',        // ex.: https://abcd1234.supabase.co
   SUPABASE_ANON_KEY: '',   // chave anon/publishable do projeto
-  ANTHROPIC_KEY_LOCAL: '', // apenas p/ testes no modo local (fica só no seu navegador)
+  // Apenas para testes no modo local (a chave fica só no seu navegador). Em produção use as Edge Functions.
+  AI_PROVIDER_LOCAL: 'openai',   // openai | anthropic
+  OPENAI_KEY_LOCAL: '',
+  OPENAI_MODEL: 'gpt-4.1',
+  ANTHROPIC_KEY_LOCAL: '',
   ANTHROPIC_MODEL: 'claude-opus-5-5',
 };
 

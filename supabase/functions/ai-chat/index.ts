@@ -1,118 +1,79 @@
-// MinhaImob — Chat dos corretores virtuais (streaming SSE)
-// Secrets: ANTHROPIC_API_KEY (obrigatório), ANTHROPIC_MODEL (opcional), AI_EFFORT_CHAT (opcional)
-import Anthropic from "npm:@anthropic-ai/sdk";
+// MinhaImob — IA dos corretores virtuais (OpenAI ou Claude)
+// mode: "chat" (streaming SSE) | "agent" (resposta + ferramentas) | "json" (saída estruturada)
 import { corsHeaders, json } from "../_shared/cors.ts";
-import { userClient } from "../_shared/auth.ts";
-
-const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-opus-5-5";
-const EFFORT = Deno.env.get("AI_EFFORT_CHAT") ?? "low";
-const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
+import { userClient, logUso, carregarConhecimento } from "../_shared/auth.ts";
+import { PROVIDER, MODEL, configured, streamText, complete, jsonOut, type Msg, type Tool } from "../_shared/llm.ts";
 
 const REGRAS = `
 Você trabalha no escritório virtual da MinhaImob, uma plataforma de vendas de imóveis no Brasil.
-Regras de operação:
-- Responda sempre em português do Brasil, direto ao ponto, em tom de colega experiente de vendas.
-- Use os dados do CRM que vierem em <contexto_crm>. Cite nomes, valores e unidades reais quando existirem.
-- Nunca invente dados de imóveis, taxas oficiais ou aprovações de crédito. Se faltar dado, diga o que falta.
-- Valores de crédito são estimativas; a aprovação final é do banco (Caixa/SBPE).
-- Quando entregar mensagens para o cliente (WhatsApp, e-mail), entregue o texto pronto para copiar.
-- Prefira listas curtas e próximos passos acionáveis. Sem enrolação.
-- Respeite a LGPD: não peça nem exponha dados sensíveis além do necessário para a venda.`.trim();
-
-type Msg = { role: "user" | "assistant"; content: string };
+- Responda sempre em português do Brasil, direto ao ponto, como um colega experiente de vendas.
+- Quem fala com você é o gestor da imobiliária: obedeça às ordens dele. Quando a ordem exigir uma ação
+  (treinar outro corretor, conversar com um colega, fazer reunião, guardar uma regra ou executar uma tarefa),
+  use as ferramentas disponíveis e diga em uma frase o que vai fazer.
+- Use os dados de <contexto_crm> e da <base_de_conhecimento>. Cite nomes, valores e unidades reais.
+- Nunca invente dados de imóveis, taxas oficiais ou aprovação de crédito. Se faltar dado, diga o que falta.
+- Mensagens para clientes: entregue o texto pronto para copiar.
+- Respeite a LGPD e a ética comercial: recuse apenas ordens ilegais ou enganosas, explicando o porquê.`.trim();
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-
   const ctx = await userClient(req);
   if (!ctx) return json({ error: "não autenticado" }, 401);
-  if (!Deno.env.get("ANTHROPIC_API_KEY")) return json({ error: "ANTHROPIC_API_KEY não configurada" }, 500);
-
   let body: {
-    agent_id?: string;
-    persona?: { nome: string; papel: string; system_prompt: string };
-    messages: Msg[];
-    contexto?: unknown;
-    conversation_id?: string;
+    mode?: "chat" | "agent" | "json" | "status"; agent_key?: string; persona?: { system_prompt: string };
+    messages?: Msg[]; contexto?: unknown; tools?: Tool[]; system?: string; prompt?: string;
+    schema?: Record<string, unknown>; schema_name?: string; knowledge_for?: string[]; conversation_id?: string;
   };
   try { body = await req.json(); } catch { return json({ error: "JSON inválido" }, 400); }
-  if (!Array.isArray(body.messages) || body.messages.length === 0) return json({ error: "messages vazio" }, 400);
+  const mode = body.mode ?? "chat";
+  if (mode === "status") return json({ provider: PROVIDER, model: MODEL, erro: configured(), ia_permitida: ctx.iaPermitida });
+  const cfgErr = configured();
+  if (cfgErr) return json({ error: cfgErr }, 500);
+  if (!ctx.iaPermitida) return json({ error: "O plano desta imobiliária não inclui IA." }, 403);
 
-  // Persona: do banco (personalizável por imobiliária) ou enviada pelo cliente
-  let persona = body.persona;
-  let orgId: string | null = null;
-  if (body.agent_id) {
-    const { data } = await ctx.sb.from("ai_agents").select("nome,papel,system_prompt,org_id").eq("id", body.agent_id).single();
-    if (data) { persona = data; orgId = data.org_id; }
+  const agentes = [...new Set([...(body.knowledge_for ?? []), ...(body.agent_key ? [body.agent_key] : [])])];
+  const conhecimento = await carregarConhecimento(ctx.sb, agentes);
+
+  try {
+    if (mode === "json") {
+      if (!body.schema || !body.prompt) return json({ error: "schema e prompt obrigatórios" }, 400);
+      const system = [body.system ?? "Responda em português do Brasil.", conhecimento].filter(Boolean).join("\n\n");
+      const r = await jsonOut(system, body.prompt, body.schema, body.schema_name ?? "saida", "low");
+      await logUso(ctx.sb, ctx.orgId, ctx.userId, "json", PROVIDER, MODEL, r.usage);
+      return json({ ok: true, data: r.data });
+    }
+
+    const hist = (body.messages ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim()).slice(-30);
+    if (!hist.length || hist[hist.length - 1].role !== "user") return json({ error: "última mensagem deve ser do usuário" }, 400);
+    const ctxTxt = body.contexto ? `<contexto_crm>\n${JSON.stringify(body.contexto)}\n</contexto_crm>\n\n` : "";
+    const last = hist[hist.length - 1];
+    const messages: Msg[] = [...hist.slice(0, -1), { role: "user", content: ctxTxt + last.content }];
+    const system = [body.persona?.system_prompt ?? "Você é um assistente de vendas imobiliárias.", REGRAS, conhecimento].filter(Boolean).join("\n\n");
+
+    if (mode === "agent") {
+      const r = await complete(system, messages, body.tools ?? [], "low");
+      await logUso(ctx.sb, ctx.orgId, ctx.userId, "agent", PROVIDER, MODEL, r.usage);
+      return json({ ok: true, text: r.text, tool_calls: r.tool_calls, provider: PROVIDER });
+    }
+
+    // chat em streaming
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (o: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`));
+        try {
+          const gen = streamText(system, messages, "low");
+          let r = await gen.next();
+          while (!r.done) { send({ t: "delta", text: r.value }); r = await gen.next(); }
+          await logUso(ctx.sb, ctx.orgId, ctx.userId, "chat", PROVIDER, MODEL, r.value);
+          send({ t: "done", provider: PROVIDER, model: MODEL });
+        } catch (e) { send({ t: "error", error: e instanceof Error ? e.message : String(e) }); }
+        finally { controller.close(); }
+      },
+    });
+    return new Response(stream, { headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } });
+  } catch (e) {
+    return json({ error: `Erro da IA (${PROVIDER}): ${e instanceof Error ? e.message : String(e)}` }, 502);
   }
-  if (!persona) return json({ error: "agente não encontrado" }, 404);
-
-  // Histórico limpo e alternado; contexto do CRM vai na última mensagem do usuário
-  const history: Msg[] = body.messages
-    .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
-    .slice(-30);
-  if (history.length === 0 || history[history.length - 1].role !== "user") return json({ error: "última mensagem deve ser do usuário" }, 400);
-  const last = history[history.length - 1];
-  const contexto = body.contexto ? `<contexto_crm>\n${JSON.stringify(body.contexto)}\n</contexto_crm>\n\n` : "";
-  const messages = [...history.slice(0, -1), { role: "user" as const, content: contexto + last.content }];
-
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
-      let full = "";
-      try {
-        // deno-lint-ignore no-explicit-any
-        const params: any = {
-          model: MODEL,
-          max_tokens: 64000,
-          betas: ["server-side-fallback-2026-07-01"],
-          fallbacks: "default",
-          output_config: { effort: EFFORT },
-          system: [
-            { type: "text", text: `${persona!.system_prompt}\n\n${REGRAS}`, cache_control: { type: "ephemeral" } },
-          ],
-          messages,
-        };
-        const s = client.beta.messages.stream(params);
-        for await (const event of s) {
-          if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-            full += event.delta.text;
-            send({ t: "delta", text: event.delta.text });
-          }
-        }
-        const final = await s.finalMessage();
-        if (final.stop_reason === "refusal") {
-          send({ t: "error", error: "O modelo recusou esta solicitação. Reformule o pedido." });
-        }
-        send({ t: "done", usage: final.usage, model: final.model });
-
-        if (body.conversation_id && full) {
-          if (!orgId) {
-            const { data } = await ctx.sb.from("ai_conversations").select("org_id").eq("id", body.conversation_id).single();
-            orgId = data?.org_id ?? null;
-          }
-          if (orgId) {
-            await ctx.sb.from("ai_messages").insert([
-              { org_id: orgId, conversation_id: body.conversation_id, role: "user", content: last.content },
-              { org_id: orgId, conversation_id: body.conversation_id, role: "assistant", content: full,
-                tokens: final.usage.output_tokens },
-            ]);
-            await ctx.sb.from("ai_conversations").update({ updated_at: new Date().toISOString() }).eq("id", body.conversation_id);
-          }
-        }
-      } catch (err) {
-        if (err instanceof Anthropic.RateLimitError) send({ t: "error", error: "Limite de uso da IA atingido. Tente em instantes." });
-        else if (err instanceof Anthropic.APIError) send({ t: "error", error: `Erro da IA (${err.status}): ${err.message}` });
-        else send({ t: "error", error: String(err) });
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: { ...corsHeaders, "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
-  });
 });

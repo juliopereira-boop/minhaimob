@@ -87,7 +87,8 @@
       };
     }
 
-    if (hasSupabase()) {
+    if (CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY) {
+      localStorage.removeItem('mi_force_local');   // tela de login sempre usa o banco real
       await db.init({ requireAuth: false });
       if (db.user) location.href = NEXT;
       else {

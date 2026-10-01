@@ -7,6 +7,8 @@ import { $, $$, esc, brlK, num, toast } from './ui.js';
 import { AGENTS, runTarefa } from './engine/agents.js';
 import { forecast } from './engine/scoring.js';
 import { mountChat } from './views/ia.js';
+import { mountFeed } from './views/time.js';
+import { bus } from './engine/orquestrador.js';
 
 const ctx = { db, data: null, async refresh() { ctx.data = await db.loadAll(); return ctx.data; }, go: (r) => (location.href = 'app.html#/' + r) };
 window.__mi = ctx;
@@ -16,7 +18,7 @@ window.__mi = ctx;
 // ---------------------------------------------------------------------------
 const ok = await db.init({ requireAuth: true });
 if (!ok) throw new Error('auth');
-if (db.mode === 'local' && !db.store.t('empreendimentos').length) await db.rpc('fn_seed_demo');
+if (db.mode === 'local' && !db.store.t('empreendimentos').length && !localStorage.getItem('mi_seeded')) { await db.rpc('fn_seed_demo'); localStorage.setItem('mi_seeded', '1'); }
 await ctx.refresh();
 db.realtime();
 db.on(async () => { await ctx.refresh(); drawWall(); hudKpis(); });
@@ -273,9 +275,41 @@ box(1.4, 0.06, 0.8, M.wood, -13, 0.42, 7.9); box(0.08, 0.4, 0.08, M.metal, -13, 
 box(3.6, 0.95, 0.7, M.woodDark, -15.8, 0.48, 4.5); box(3.6, 0.05, 0.75, M.metal, -15.8, 0.97, 4.5);
 box(0.45, 0.6, 0.45, M.black, -16.6, 1.3, 4.5); box(0.3, 0.06, 0.2, M.gold, -16.6, 1.08, 4.75);
 const COFFEE = new THREE.Vector3(-15.6, 0, 5.4);
+// sala de treinamento (fundo à esquerda)
+const TR = { x0: -18.8, x1: -12.2, z0: -12.8, z1: -6.5, door: -15 };
+[[TR.x1, (TR.z0 + TR.z1) / 2, 0.1, TR.z1 - TR.z0], [(TR.x0 + TR.door - 0.7) / 2, TR.z1, TR.door - 0.7 - TR.x0, 0.1], [(TR.door + 0.7 + TR.x1) / 2, TR.z1, TR.x1 - TR.door - 0.7, 0.1]].forEach(([x, z, w, d]) => {
+  const p = new THREE.Mesh(new THREE.BoxGeometry(w, 2.8, d), M.glass); p.position.set(x, 1.4, z); scene.add(p);
+  box(w, 0.06, d, M.frame, x, 2.8, z, scene, false);
+});
+const quadro = canvasTex(1024, 512, () => {});
+const quadroMesh = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 2.2), new THREE.MeshStandardMaterial({ map: quadro.tex, emissive: 0xffffff, emissiveMap: quadro.tex, emissiveIntensity: 0.55, roughness: 0.5 }));
+quadroMesh.position.set(-15.5, 2.0, TR.z0 - 0.02); scene.add(quadroMesh);
+box(4.6, 2.4, 0.06, M.frame, -15.5, 2.0, TR.z0 - 0.06);
+function drawQuadro(titulo = 'SALA DE TREINAMENTO', linhas = [], quem = '') {
+  const g = quadro.g, w = 1024, h = 512;
+  g.fillStyle = '#f4f1ea'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#A9742C'; g.font = '800 30px Manrope, sans-serif'; g.fillText('SALA DE TREINAMENTO', 40, 58);
+  g.fillStyle = '#1b1f2a'; g.font = '700 42px Manrope, sans-serif'; wrap(g, titulo, 40, 118, w - 80, 48, 2);
+  if (quem) { g.fillStyle = '#6e7686'; g.font = '600 24px Manrope, sans-serif'; g.fillText(quem, 40, 222); }
+  g.font = '600 24px Manrope, sans-serif'; g.fillStyle = '#2a3142';
+  linhas.slice(-4).forEach((l, i) => wrap(g, '• ' + l, 40, 272 + i * 58, w - 80, 28, 2));
+  quadro.tex.needsUpdate = true;
+}
+function wrap(g, txt, x, y, maxW, lh, maxL) {
+  const ws = String(txt).split(' '); let line = '', n = 0;
+  for (const w of ws) { const t = line ? line + ' ' + w : w; if (g.measureText(t).width > maxW && line) { g.fillText(n === maxL - 1 ? line + '…' : line, x, y + n * lh); n++; line = w; if (n >= maxL) return; } else line = t; }
+  if (n < maxL) g.fillText(line, x, y + n * lh);
+}
+drawQuadro('Treinos do time acontecem aqui', ['Peça no chat: "Elisa, treine a Ana para captar leads mais quentes"']);
+const TR_PROF = new THREE.Vector3(-15.5, 0, -11.5);
+const TR_ALUNOS = [new THREE.Vector3(-16.5, 0, -9.2), new THREE.Vector3(-14.5, 0, -9.2)];
+TR_ALUNOS.forEach((p) => chair(p.x, p.z, Math.PI));
+const trSign = canvasTex(512, 96, (g, w) => { g.fillStyle = '#0b1020'; g.fillRect(0, 0, w, 96); g.fillStyle = '#C9B8FF'; g.font = '800 38px Manrope, sans-serif'; g.textAlign = 'center'; g.fillText('SALA DE TREINAMENTO', w / 2, 62); });
+const trs = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 0.6), new THREE.MeshBasicMaterial({ map: trSign.tex })); trs.position.set(TR.door, 3.2, TR.z1 + 0.06); scene.add(trs);
+
 // recepção
 box(4, 1.05, 0.8, M.woodDark, 9, 0.52, 10.6); box(4.1, 0.05, 0.9, M.gold, 9, 1.07, 10.6, scene, false);
-[[-17, -11], [17, -11], [-17, 11.5], [4, 11.5], [-12, -2.3], [0, 2.4], [0, -2.4], [17, 2.2]].forEach(([x, z], i) => plant(x, z, i > 4 ? 0.8 : 1.15));
+[[-17.6, -5.6], [17, -11], [-17, 11.5], [4, 11.5], [-12, -2.3], [0, 2.4], [0, -2.4], [17, 2.2]].forEach(([x, z], i) => plant(x, z, i > 4 ? 0.8 : 1.15));
 
 // ---------------------------------------------------------------------------
 // Agentes (humanoides low-poly animados)
@@ -344,6 +378,8 @@ const LOC = {
   side: (id) => ({ kind: 'side', pos: DESKS[id].side.clone(), enter: [] }),
   coffee: () => ({ kind: 'coffee', pos: V(-15.6, 5.6), enter: [V(-13.2, 5.6)], face: Math.PI }),
   screen: () => { const x = pick([-6, 0, 6]) + (Math.random() - 0.5) * 1.2; return { kind: 'screen', pos: V(x, -8.6), enter: [], face: Math.PI }; },
+  treinoProf: () => ({ kind: 'treino', pos: TR_PROF.clone(), enter: [V(TR.door, TR.z1 + 0.8), V(TR.door, TR.z1 - 0.8)], face: 0 }),
+  treinoAluno: (i) => ({ kind: 'treino', pos: TR_ALUNOS[i % 2].clone(), enter: [V(TR.door, TR.z1 + 0.8), V(TR.door, TR.z1 - 0.8)], face: Math.PI }),
   meeting: (i) => {
     const spot = MR_SPOTS[i].clone(), doorIn = V(MR_DOOR_X, MR.z - MR.d / 2 + 0.8);
     return { kind: 'meeting', pos: spot, enter: [V(MR_DOOR_X, MR.z - MR.d / 2 - 0.8), doorIn, ...ringPts(angOf(doorIn), angOf(spot))], face: Math.atan2(MR.x - spot.x, MR.z - spot.z) };
@@ -362,7 +398,10 @@ function goHome(ag, then) {
   routeTo(ag, LOC.seat(ag.a.id), () => { ag.state = 'sentado'; ag.sitting = true; ag.status = pick(STATUS[ag.a.id]); then && then(); });
 }
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
-function bubble(ag, emoji, ms = 4000) { ag.bubEl.textContent = emoji; ag.bubEl.style.display = ''; clearTimeout(ag.bubT); ag.bubT = setTimeout(() => (ag.bubEl.style.display = 'none'), ms); }
+function bubble(ag, emoji, ms = 4000) { ag.bubEl.className = 'bubble3d'; ag.bubEl.textContent = emoji; ag.bubEl.style.display = ''; clearTimeout(ag.bubT); ag.bubT = setTimeout(() => (ag.bubEl.style.display = 'none'), ms); }
+function falaBalao(ag, texto, ms = 5000) { ag.bubEl.className = 'fala3d'; ag.bubEl.textContent = texto.length > 150 ? texto.slice(0, 147) + '…' : texto; ag.bubEl.style.display = ''; clearTimeout(ag.bubT); ag.bubT = setTimeout(() => (ag.bubEl.style.display = 'none'), ms); }
+const irPara = (ag, loc) => new Promise((res) => { const t = setTimeout(res, 45000); routeTo(ag, loc, () => { ag.state = 'parado'; clearTimeout(t); res(); }); });
+const olhar = (a, b) => { a.face = Math.atan2(b.root.position.x - a.root.position.x, b.root.position.z - a.root.position.z); };
 
 function decide(ag) {
   if (ag.locked || ag.state !== 'sentado') return;
@@ -436,12 +475,74 @@ function select(id) {
   openPanel(ag);
   renderRoster();
 }
+const quadroFalas = [];
+const stage = {
+  async encenar(tipo, parts, tema) {
+    const ags = parts.map((k) => byId[k]).filter(Boolean);
+    ags.forEach((g) => { g.locked = true; g.speed = 2.0; });
+    abrirFeed();
+    if (tipo === 'treinamento') {
+      const [prof, aluno] = ags;
+      prof.status = `🎓 indo treinar ${aluno.a.nome}`;
+      flyTo(new THREE.Vector3(aluno.root.position.x + 3, 6, aluno.root.position.z + 7), new THREE.Vector3(aluno.root.position.x, 1, aluno.root.position.z));
+      await irPara(prof, LOC.side(aluno.a.id));
+      olhar(prof, aluno);
+      falaBalao(prof, `${aluno.a.nome}, vem comigo para a sala de treinamento?`, 3000);
+      await espera(1600); falaBalao(aluno, 'Bora!', 2000); await espera(800);
+      prof.status = `🎓 treinando ${aluno.a.nome}`; aluno.status = `🎓 em treinamento com ${prof.a.nome}`;
+      flyTo(new THREE.Vector3(-11, 6.8, -2.5), new THREE.Vector3(-15.5, 1.2, -10.2));
+      quadroFalas.length = 0; drawQuadro(tema, [], `${prof.a.nome} treinando ${aluno.a.nome}`);
+      await Promise.all([irPara(prof, LOC.treinoProf()), irPara(aluno, LOC.treinoAluno(0))]);
+      aluno.sitting = true; aluno.state = 'reuniao';
+    } else if (tipo === 'conversa') {
+      const [a, b] = ags;
+      a.status = `💬 indo falar com ${b.a.nome}`; b.status = `💬 conversando com ${a.a.nome}`;
+      flyTo(new THREE.Vector3(b.root.position.x + 3, 5.5, b.root.position.z + 6), new THREE.Vector3(b.root.position.x, 1, b.root.position.z));
+      await irPara(a, LOC.side(b.a.id)); olhar(a, b);
+    } else {
+      ags.forEach((g) => (g.status = '🤝 indo para a reunião'));
+      flyTo(new THREE.Vector3(MR.x - 7.5, 8.5, MR.z + 8.5), new THREE.Vector3(MR.x, 0.6, MR.z));
+      await Promise.all(ags.map((g, i) => espera(i * 350).then(() => irPara(g, LOC.meeting(i))).then(() => { g.state = 'reuniao'; g.sitting = true; g.status = '🤝 em reunião'; })));
+    }
+  },
+  falar(k, fala) {
+    const g = byId[k]; if (!g) return;
+    falaBalao(g, fala, Math.max(2400, Math.min(6500, fala.length * 48)));
+    if (g.loc?.kind === 'treino') { quadroFalas.push(`${g.a.nome}: ${fala}`); drawQuadro(quadroTitulo(), quadroFalas); }
+  },
+  encerrar(parts) {
+    setTimeout(() => parts.map((k) => byId[k]).filter(Boolean).forEach((g) => {
+      g.locked = false;
+      if (g.loc?.kind === 'seat' && g.root.position.distanceTo(DESKS[g.a.id].seat) < 0.3) { g.state = 'sentado'; g.sitting = true; g.status = pick(STATUS[g.a.id]); return; }
+      g.speed = 2.0; goHome(g, () => (g.speed = 1.35));
+    }), 2500);
+    setTimeout(() => flyTo(HOME.pos.clone(), HOME.target.clone()), 3500);
+  },
+};
+let _quadroTitulo = '';
+const quadroTitulo = () => _quadroTitulo;
+const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+bus.addEventListener('interacao:inicio', (e) => { _quadroTitulo = e.detail.tipo === 'treinamento' ? e.detail.tema : _quadroTitulo; logTicker(`${e.detail.tipo === 'treinamento' ? '🎓' : e.detail.tipo === 'reuniao' ? '🤝' : '💬'} ${(e.detail.participantes || []).map((k) => byId[k]?.a.nome).join(' + ')}: ${e.detail.tema}`); });
+
+// painel de conversas do time
+let feedCtl = null;
+function abrirFeed() {
+  if (innerWidth < 760) return;
+  const f = $('#feed'); if (f.classList.contains('open')) return;
+  f.classList.add('open'); $('#b-feed').classList.add('primary');
+  f.innerHTML = '<div class="row between" style="padding:12px 14px;border-bottom:1px solid var(--border)"><b>💬 Conversas do time</b><button class="btn xs ghost" id="feed-x">✕</button></div><div id="feed-body" style="overflow:auto;padding:10px;flex:1"></div>';
+  feedCtl = mountFeed($('#feed-body'), ctx, { limite: 15, compacto: true });
+  $('#feed-x').onclick = fecharFeed;
+}
+function fecharFeed() { $('#feed').classList.remove('open'); $('#b-feed').classList.remove('primary'); feedCtl?.destroy(); feedCtl = null; }
+
 function openPanel(ag) {
   const panel = $('#panel');
   panel.innerHTML = `<div class="row" style="padding:10px 12px 0;justify-content:flex-end"><button class="btn xs ghost" id="p-close">Fechar ✕</button></div><div style="flex:1;min-height:0" id="p-chat"></div>`;
   panel.classList.add('open');
   $('#p-close').onclick = closePanel;
   mountChat($('#p-chat'), ctx, ag.a.id, {
+    stage,
     onState: (s) => {
       if (s === 'falando') { ag.locked = true; ag.status = '💬 falando com você'; bubble(ag, '💬', 2500); }
       else if (s === 'trabalhando') {
@@ -449,7 +550,8 @@ function openPanel(ag) {
         logTicker(`${ag.a.nome} concluiu uma tarefa para ${(db.profile?.nome || 'você').split(' ')[0]}`);
         if (ag.state !== 'sentado' && ag.state !== 'andando') goHome(ag);
         setTimeout(() => { ag.working = false; }, 3200);
-      } else { setTimeout(() => { ag.locked = false; }, 4000); ag.status = pick(STATUS[ag.a.id]); }
+      } else if (s === 'acao') { /* encenação controla o agente */ }
+      else { setTimeout(() => { if (!ag.state || ag.state === 'sentado') ag.locked = false; }, 4000); if (ag.state === 'sentado') ag.status = pick(STATUS[ag.a.id]); }
     },
   });
 }
@@ -489,10 +591,11 @@ let touring = false, tourA = 0;
 function stopTour() { touring = false; controls.autoRotate = false; $('#b-tour').classList.remove('primary'); }
 $('#b-tour').onclick = () => { touring = !touring; camGoal.pos = null; $('#b-tour').classList.toggle('primary', touring); if (!touring) stopTour(); };
 $('#b-reset').onclick = () => { stopTour(); closePanel(); };
+$('#b-feed').onclick = () => ($('#feed').classList.contains('open') ? fecharFeed() : abrirFeed());
 
 // daily de vendas: todos vão para a sala de fechamento e reportam com dados reais
 $('#b-daily').onclick = () => {
-  stopTour(); $('#panel').classList.remove('open');
+  stopTour(); $('#panel').classList.remove('open'); fecharFeed();
   flyTo(new THREE.Vector3(MR.x - 7.5, 8.5, MR.z + 8.5), new THREE.Vector3(MR.x, 0.6, MR.z));
   logTicker('Daily de vendas iniciada na Sala de Fechamento');
   agents.forEach((ag, i) => {

@@ -53,11 +53,11 @@ function render() {
     <div class="card kpi"><div class="label">Em teste grátis</div><div class="value" style="color:var(--blue)">${num(m.trial)}</div><div class="delta ${m.trial_vencendo_7d ? 'down' : 'muted'}">${num(m.trial_vencendo_7d)} vencendo em 7 dias · potencial ${brl(m.mrr_potencial_trial)}</div></div>
     <div class="card kpi"><div class="label">Perdidos / bloqueados</div><div class="value" style="color:var(--red)">${num((m.suspensos || 0) + (m.cancelados || 0) + (m.trial_vencido || 0))}</div><div class="delta muted">${num(m.suspensos)} susp. · ${num(m.cancelados)} canc. · ${num(m.trial_vencido)} trial vencido</div></div>
   </div>
-  <div class="tabs mt" id="tabs">${[['clientes', 'Clientes'], ['planos', 'Planos'], ['supers', 'Superadmins'], ['config', 'Configurações']].map(([k, l]) => `<button data-t="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+  <div class="tabs mt" id="tabs">${[['clientes', 'Clientes'], ['planos', 'Planos'], ['ia', 'Integrações (IA)'], ['supers', 'Superadmins'], ['config', 'Configurações']].map(([k, l]) => `<button data-t="${k}" class="${state.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
   <div id="body"></div>`;
   $('#b-new').onclick = novoCliente;
   $('#tabs').onclick = (e) => { const b = e.target.closest('[data-t]'); if (b) { state.tab = b.dataset.t; render(); } };
-  ({ clientes: tabClientes, planos: tabPlanos, supers: tabSupers, config: tabConfig })[state.tab]($('#body'));
+  ({ clientes: tabClientes, planos: tabPlanos, ia: tabIA, supers: tabSupers, config: tabConfig })[state.tab]($('#body'));
 }
 
 // ---------------------------------------------------------------------------
@@ -75,14 +75,14 @@ function tabClientes(el) {
       <td class="nowrap">${c.status === 'trial' ? date(c.trial_ate) : '—'}</td>
       <td class="num">${num(c.usuarios)}${c.limite_usuarios ? `/${c.limite_usuarios}` : ''}${c.convites_pendentes ? ` <span class="badge b-amber">+${c.convites_pendentes} conv.</span>` : ''}</td>
       <td class="muted" style="font-size:12px">${num(c.leads)} leads · ${num(c.empreendimentos)} emp. · ${num(c.unidades)} un.</td>
-      <td class="num">${num(c.vendas)} · ${brlK(c.vgv_vendido)}</td><td class="nowrap muted">${c.ultima_atividade ? rel(c.ultima_atividade) : 'nunca'}</td></tr>`).join('')
-      || '<tr><td colspan="9"><div class="empty">Nenhum cliente. Clique em “Novo cliente”.</div></td></tr>';
+      <td class="num">${num(c.vendas)} · ${brlK(c.vgv_vendido)}</td><td class="num" title="${num(c.ia_tokens_30d)} tokens">${num(c.ia_chamadas_30d)}</td><td class="nowrap muted">${c.ultima_atividade ? rel(c.ultima_atividade) : 'nunca'}</td></tr>`).join('')
+      || '<tr><td colspan="10"><div class="empty">Nenhum cliente. Clique em “Novo cliente”.</div></td></tr>';
     $$('tr[data-id]', el).forEach((tr) => tr.onclick = () => abrirCliente(tr.dataset.id));
   };
   const cnt = (s) => state.clientes.filter((c) => (s === 'trial_vencido' ? c.status === 'trial' && !c.liberada : c.status === s)).length;
   el.innerHTML = `<div class="card"><div class="row wrap"><input id="q" placeholder="Buscar por nome, cidade, contato, CNPJ…" value="${esc(state.q)}" style="max-width:320px" />
     ${[['', 'Todos'], ['ativo', 'Ativos'], ['trial', 'Trial'], ['trial_vencido', 'Trial vencido'], ['inadimplente', 'Inadimplentes'], ['suspenso', 'Suspensos'], ['cancelado', 'Cancelados']].map(([k, l]) => `<span class="chip click ${state.st === k ? 'on' : ''}" data-st="${k}">${l}${k ? ` (${cnt(k)})` : ''}</span>`).join('')}</div></div>
-  <div class="card pad-0 mt"><div class="table-wrap"><table class="t"><thead><tr><th>Cliente</th><th>Plano</th><th>Status</th><th class="num">R$/mês</th><th>Trial até</th><th class="num">Usuários</th><th>Uso</th><th class="num">Vendas</th><th>Última atividade</th></tr></thead><tbody id="tb"></tbody></table></div></div>
+  <div class="card pad-0 mt"><div class="table-wrap"><table class="t"><thead><tr><th>Cliente</th><th>Plano</th><th>Status</th><th class="num">R$/mês</th><th>Trial até</th><th class="num">Usuários</th><th>Uso</th><th class="num">Vendas</th><th class="num">IA 30d</th><th>Última atividade</th></tr></thead><tbody id="tb"></tbody></table></div></div>
   <div class="hint mt">Por privacidade (LGPD), o console mostra apenas números agregados de cada cliente, nunca os dados dos leads.</div>`;
   $('#q', el).oninput = debounce((e) => { state.q = e.target.value; draw(); }, 200);
   $$('[data-st]', el).forEach((c) => c.onclick = () => { state.st = c.dataset.st; $$('[data-st]', el).forEach((x) => x.classList.toggle('on', x === c)); draw(); });
@@ -216,7 +216,8 @@ function tabPlanos(el) {
     <div class="row between"><span class="badge b-gold">${esc(p.id)}</span><label class="check"><input type="checkbox" name="ativo" ${p.ativo ? 'checked' : ''} /> ativo</label></div>
     <div class="field mt"><label>Nome</label><input name="nome" value="${esc(p.nome)}" /></div>
     <div class="field-row"><div class="field"><label>R$/mês</label><input name="valor_mensal" data-num value="${p.valor_mensal}" /></div><div class="field"><label>Usuários</label><input name="limite_usuarios" data-num value="${p.limite_usuarios ?? ''}" placeholder="∞" /></div><div class="field"><label>Unidades</label><input name="limite_unidades" data-num value="${p.limite_unidades ?? ''}" placeholder="∞" /></div></div>
-    <div class="field"><label>Recursos (um por linha)</label><textarea name="recursos">${esc((p.recursos || []).join('\n'))}</textarea></div>
+    <label class="check"><input type="checkbox" name="ia_habilitada" ${p.ia_habilitada !== false ? 'checked' : ''} /> Inclui IA (corretores e book)</label>
+    <div class="field mt-s"><label>Recursos (um por linha)</label><textarea name="recursos">${esc((p.recursos || []).join('\n'))}</textarea></div>
     <div class="row between"><button class="btn sm primary">Salvar</button><span class="muted" style="font-size:12px">${state.clientes.filter((c) => c.plano === p.id).length} cliente(s)</span></div></form>`).join('')}
     <form class="card" id="np"><h3>Novo plano</h3><div class="field mt-s"><label>Código (sem espaço)</label><input name="id" required pattern="[a-z0-9_-]+" /></div><div class="field"><label>Nome</label><input name="nome" required /></div><div class="field"><label>R$/mês</label><input name="valor_mensal" data-num required /></div><button class="btn sm">Criar plano</button></form></div>
     <div class="hint mt">Mudar o preço do plano não altera o valor de quem já é cliente. Ajuste cliente a cliente na ficha.</div>`;
@@ -229,6 +230,37 @@ function tabPlanos(el) {
     e.preventDefault(); const d = formData(e.target);
     const { error } = await db.sb.from('planos').insert({ ...d, ordem: state.planos.length + 1 });
     if (error) return toast(error.message, 'err'); toast('Plano criado', 'ok'); await load(); render();
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Integrações (IA)
+// ---------------------------------------------------------------------------
+async function tabIA(el) {
+  el.innerHTML = '<div class="card"><div class="empty">Consultando servidor…</div></div>';
+  let st = null;
+  try { st = await db.aiStatus(); } catch (e) { st = { erro: e.message }; }
+  const ok = st && !st.erro && st.provider;
+  el.innerHTML = `<div class="grid g2">
+    <div class="card"><h3>Status da IA</h3>
+      <div class="row mt-s"><span class="badge ${ok ? 'b-green' : 'b-red'}">${ok ? '● funcionando' : '✕ não configurada'}</span></div>
+      <dl class="kv mt"><dt>Provedor</dt><dd>${esc(st?.provider || '—')}</dd><dt>Modelo</dt><dd>${esc(st?.model || '—')}</dd>${st?.erro ? `<dt>Problema</dt><dd style="color:var(--red)">${esc(st.erro)}</dd>` : ''}</dl>
+      <button class="btn sm mt" id="t-ia">Testar resposta</button><div id="t-r" class="mt-s"></div>
+      <div class="hint mt">As chaves ficam só nos <i>secrets</i> do Supabase. Nunca aparecem para clientes nem no navegador.</div></div>
+    <div class="card"><h3>Configurar provedor</h3><p class="muted mt-s" style="font-size:12.5px">No terminal, dentro da pasta do projeto:</p>
+      <div class="code mt-s">supabase functions deploy ai-chat
+supabase functions deploy parse-book
+
+# OpenAI
+supabase secrets set AI_PROVIDER=openai OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1
+
+# ou Claude (Anthropic)
+supabase secrets set AI_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... ANTHROPIC_MODEL=claude-opus-5-5</div>
+      <p class="muted mt" style="font-size:12.5px">Trocar de provedor = mudar <code>AI_PROVIDER</code>; não precisa publicar de novo. O consumo de cada cliente aparece na coluna “IA 30d” da aba Clientes, e o plano define quem tem IA.</p></div></div>`;
+  $('#t-ia', el).onclick = async () => {
+    const r = $('#t-r', el); r.innerHTML = '<span class="muted">Testando…</span>';
+    try { const t = await db.ai({ mode: 'chat', persona: { system_prompt: 'Responda apenas: OK, IA funcionando.' }, messages: [{ role: 'user', content: 'teste' }] }); r.innerHTML = `<div class="callout green">${esc(t.slice(0, 100))}</div>`; }
+    catch (e) { r.innerHTML = `<div class="callout red">${esc(e.message)}</div>`; }
   };
 }
 

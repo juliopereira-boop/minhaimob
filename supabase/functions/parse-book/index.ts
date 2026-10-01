@@ -1,14 +1,11 @@
-// MinhaImob — Destrinchador de Book com IA (PDF nativo ou texto extraído)
-// Secrets: ANTHROPIC_API_KEY (obrigatório), ANTHROPIC_MODEL (opcional), AI_EFFORT_BOOK (opcional)
-import Anthropic from "npm:@anthropic-ai/sdk";
+// MinhaImob — Destrinchador de Book com IA (OpenAI ou Claude)
+// Claude lê o PDF nativo (≤30 MB); OpenAI recebe o texto extraído no navegador.
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { corsHeaders, json } from "../_shared/cors.ts";
-import { userClient } from "../_shared/auth.ts";
+import { userClient, logUso } from "../_shared/auth.ts";
+import { PROVIDER, MODEL, configured, jsonOut } from "../_shared/llm.ts";
 
-const MODEL = Deno.env.get("ANTHROPIC_MODEL") ?? "claude-opus-5-5";
-const EFFORT = Deno.env.get("AI_EFFORT_BOOK") ?? "medium";
-const MAX_PDF_BYTES = 30 * 1024 * 1024; // limite de request da API é 32 MB
-const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
+const MAX_PDF_BYTES = 30 * 1024 * 1024;
 
 const S = { type: ["string", "null"] };
 const N = { type: ["number", "null"] };
@@ -70,67 +67,38 @@ Regras:
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
-
   const ctx = await userClient(req);
   if (!ctx) return json({ error: "não autenticado" }, 401);
-  if (!Deno.env.get("ANTHROPIC_API_KEY")) return json({ error: "ANTHROPIC_API_KEY não configurada" }, 500);
+  const cfgErr = configured();
+  if (cfgErr) return json({ error: cfgErr }, 500);
+  if (!ctx.iaPermitida) return json({ error: "O plano desta imobiliária não inclui IA." }, 403);
 
   let body: { book_id?: string; storage_path?: string; text?: string; filename?: string };
   try { body = await req.json(); } catch { return json({ error: "JSON inválido" }, 400); }
 
-  // deno-lint-ignore no-explicit-any
-  const content: any[] = [];
-  let metodo = "ia-texto";
-
-  if (body.storage_path && body.storage_path.toLowerCase().endsWith(".pdf")) {
+  let pdf: string | undefined;
+  let metodo = `ia-${PROVIDER}-texto`;
+  if (PROVIDER === "anthropic" && body.storage_path?.toLowerCase().endsWith(".pdf")) {
     const { data: file, error } = await ctx.sb.storage.from("books").download(body.storage_path);
-    if (!error && file && file.size <= MAX_PDF_BYTES) {
-      const b64 = encodeBase64(new Uint8Array(await file.arrayBuffer()));
-      content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } });
-      metodo = "ia-pdf";
-    }
+    if (!error && file && file.size <= MAX_PDF_BYTES) { pdf = encodeBase64(new Uint8Array(await file.arrayBuffer())); metodo = "ia-anthropic-pdf"; }
   }
-  if (content.length === 0) {
-    const text = (body.text ?? "").trim();
-    if (!text) return json({ error: "Envie storage_path de um PDF (≤30 MB) ou o texto extraído do book." }, 400);
-    if (text.length > 2_500_000) {
-      return json({ error: "Texto grande demais para uma análise. Divida o book em partes." }, 413);
-    }
-    content.push({ type: "text", text: `<book arquivo="${body.filename ?? "book"}">\n${text}\n</book>` });
-  }
-  content.push({ type: "text", text: "Destrinche este book no formato JSON solicitado." });
+  const text = (body.text ?? "").trim();
+  if (!pdf && !text) return json({ error: "Envie o texto extraído do book (ou um PDF no storage, com Claude)." }, 400);
+  if (text.length > 2_500_000) return json({ error: "Texto grande demais para uma análise. Divida o book em partes." }, 413);
+  const prompt = pdf ? "Destrinche este book no formato JSON solicitado." : `<book arquivo="${body.filename ?? "book"}">\n${text}\n</book>\n\nDestrinche este book no formato JSON solicitado.`;
 
   if (body.book_id) await ctx.sb.from("books").update({ status: "processando" }).eq("id", body.book_id);
-
   try {
-    // deno-lint-ignore no-explicit-any
-    const params: any = {
-      model: MODEL,
-      max_tokens: 32000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: { effort: EFFORT, format: { type: "json_schema", schema: SCHEMA } },
-      system: SYSTEM,
-      messages: [{ role: "user", content }],
-    };
-    const final = await client.beta.messages.stream(params).finalMessage();
-
-    if (final.stop_reason === "refusal") throw new Error("A IA recusou processar este material.");
-    if (final.stop_reason === "max_tokens") throw new Error("Resposta excedeu o limite. Tente um book menor.");
-    const textBlock = final.content.find((b: { type: string }) => b.type === "text") as { text: string } | undefined;
-    if (!textBlock) throw new Error("Resposta sem conteúdo.");
-    const extracao = JSON.parse(textBlock.text);
-
+    const r = await jsonOut(SYSTEM, prompt, SCHEMA, "book", "medium", pdf);
+    const extracao = r.data;
+    await logUso(ctx.sb, ctx.orgId, ctx.userId, "book", PROVIDER, MODEL, r.usage);
     if (body.book_id) {
-      await ctx.sb.from("books").update({
-        status: "extraido", metodo, extracao, confianca: extracao.confianca,
-        campos_faltando: extracao.campos_faltando, erro: null,
-      }).eq("id", body.book_id);
+      await ctx.sb.from("books").update({ status: "extraido", metodo, extracao, confianca: extracao.confianca, campos_faltando: extracao.campos_faltando, erro: null }).eq("id", body.book_id);
     }
-    return json({ ok: true, metodo, extracao, usage: final.usage, model: final.model });
+    return json({ ok: true, metodo, extracao, provider: PROVIDER, model: MODEL });
   } catch (err) {
-    const msg = err instanceof Anthropic.APIError ? `Erro da IA (${err.status}): ${err.message}` : String(err instanceof Error ? err.message : err);
+    const msg = err instanceof Error ? err.message : String(err);
     if (body.book_id) await ctx.sb.from("books").update({ status: "erro", erro: msg }).eq("id", body.book_id);
-    return json({ error: msg }, 502);
+    return json({ error: `Erro da IA (${PROVIDER}): ${msg}` }, 502);
   }
 });

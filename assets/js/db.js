@@ -225,8 +225,27 @@ export const db = {
         const l = S.t('leads').find((x) => x.id === args.p_lead);
         return l ? matchUnidades(l, this._enriched(), args.p_limit || 10) : [];
       }
+      case 'fn_limpar_demo': {
+        const demoLead = (l) => l.demo || /@exemplo\.com$/.test(l.email || '');
+        const leadIds = new Set(S.t('leads').filter(demoLead).map((l) => l.id));
+        const empIds = new Set(S.t('empreendimentos').filter((e) => e.demo || e.construtora === 'Construtora Demo').map((e) => e.id));
+        const antes = { leads: leadIds.size, empreendimentos: empIds.size, comparaveis: S.t('comparaveis').filter((c) => c.demo).length };
+        S.data.leads = S.t('leads').filter((l) => !leadIds.has(l.id));
+        ['deals', 'activities', 'matches', 'simulacoes'].forEach((c) => (S.data[c] = S.t(c).filter((x) => !leadIds.has(x.lead_id))));
+        S.data.empreendimentos = S.t('empreendimentos').filter((e) => !empIds.has(e.id));
+        ['tipologias', 'unidades'].forEach((c) => (S.data[c] = S.t(c).filter((x) => !empIds.has(x.empreendimento_id))));
+        S.data.deals = S.t('deals').map((dl) => (empIds.has(dl.empreendimento_id) ? { ...dl, empreendimento_id: null, unidade_id: null } : dl));
+        const dealIds = new Set(S.t('deals').map((x) => x.id));
+        S.data.deal_stage_history = S.t('deal_stage_history').filter((h) => dealIds.has(h.deal_id));
+        S.data.comparaveis = S.t('comparaveis').filter((c) => !c.demo);
+        S.data._meta.dados_reais = true;
+        localStorage.setItem('mi_seeded', '1');
+        S.save(); this.emit('*');
+        return antes;
+      }
       case 'fn_seed_demo': {
         if (S.t('empreendimentos').some((e) => e.nome === 'Residencial Maré Alta')) return { aviso: 'dados de demonstração já carregados' };
+        if (S.data._meta?.dados_reais) return { aviso: 'imobiliária usando dados reais — demonstração desativada' };
         const d = demoData(uid, this.user.id);
         const o = (r) => ({ org_id: this.orgId, updated_at: new Date().toISOString(), created_at: r.created_at || new Date().toISOString(), ...r });
         for (const [k, rows] of Object.entries(d)) S.t(k).push(...rows.map(o));
@@ -287,6 +306,9 @@ export const db = {
   },
 
   // ---------- carregamento agregado ----------
+  dadosReais() { return this.mode === 'local' ? !!this.store.data._meta?.dados_reais : !!this.org?.config?.dados_reais; },
+  temDemo(data) { return !this.dadosReais() && (data.empreendimentos.some((e) => e.demo || e.construtora === 'Construtora Demo') || data.leads.some((l) => l.demo)); },
+
   async loadAll(tables = ['leads', 'deals', 'empreendimentos', 'tipologias', 'unidades', 'activities', 'comparaveis', 'deal_stage_history']) {
     const out = {};
     await Promise.all(tables.map(async (t) => {
@@ -317,96 +339,152 @@ export const db = {
     ch.subscribe();
   },
 
-  // ---------- IA ----------
+  // ---------- IA (OpenAI ou Claude) ----------
   aiMode() {
-    if (this.mode === 'supabase') return localStorage.getItem('mi_ai_off') === '1' ? null : 'edge';
-    return CONFIG.ANTHROPIC_KEY_LOCAL ? 'browser' : null;
+    if (this.mode === 'supabase') {
+      if (localStorage.getItem('mi_ai_off') === '1') return null;
+      if (this.conta?.org && this.conta.org.ia === false && !this.isSuperadmin) return null;
+      return 'edge';
+    }
+    const prov = CONFIG.AI_PROVIDER_LOCAL || 'openai';
+    return (prov === 'openai' ? CONFIG.OPENAI_KEY_LOCAL : CONFIG.ANTHROPIC_KEY_LOCAL) ? 'browser' : null;
   },
   async _token() { const { data } = await this.sb.auth.getSession(); return data.session?.access_token; },
-
-  /** Chat com streaming. Retorna o texto completo. Lança erro se a IA não estiver disponível. */
-  async aiChat({ persona, agentId, messages, contexto, conversationId, onDelta = () => {} }) {
-    const mode = this.aiMode();
-    if (!mode) throw new Error('IA não configurada');
-    if (mode === 'edge') {
-      const r = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/ai-chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await this._token()}`, apikey: CONFIG.SUPABASE_ANON_KEY },
-        body: JSON.stringify({ agent_id: agentId, persona, messages, contexto, conversation_id: conversationId }),
-      });
-      if (!r.ok || !r.body) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error || msg; } catch { /* */ } throw new Error(msg); }
-      const reader = r.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '', full = '';
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf('\n\n')) >= 0) {
-          const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (!line) continue;
-          const ev = JSON.parse(line.slice(6));
-          if (ev.t === 'delta') { full += ev.text; onDelta(ev.text, full); }
-          else if (ev.t === 'error') throw new Error(ev.error);
-        }
-      }
-      return full;
-    }
-    // modo navegador (teste local com chave própria)
-    const client = await browserClient();
-    const ctx = contexto ? `<contexto_crm>\n${JSON.stringify(contexto)}\n</contexto_crm>\n\n` : '';
-    const msgs = messages.map((m, idx) => (idx === messages.length - 1 && m.role === 'user' ? { role: 'user', content: ctx + m.content } : m));
-    const stream = client.beta.messages.stream({
-      model: CONFIG.ANTHROPIC_MODEL || 'claude-opus-5-5', max_tokens: 64000,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      output_config: { effort: 'low' },
-      system: [{ type: 'text', text: persona.system_prompt, cache_control: { type: 'ephemeral' } }],
-      messages: msgs,
+  async _edge(fn, body) {
+    return fetch(`${CONFIG.SUPABASE_URL}/functions/v1/${fn}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await this._token()}`, apikey: CONFIG.SUPABASE_ANON_KEY },
+      body: JSON.stringify(body),
     });
-    let full = '';
-    for await (const ev of stream) {
-      if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') { full += ev.delta.text; onDelta(ev.delta.text, full); }
+  },
+  /** Base de conhecimento local (mesmo formato do servidor). */
+  _knowledgeLocal(agentes = []) {
+    const itens = applyOpts(this.store.t('ai_conhecimento'), { order: 'created_at.desc' }).filter((k) => k.ativo !== false && (!k.agente || agentes.includes(k.agente)));
+    let total = 0; const partes = [];
+    for (const k of itens) {
+      const bloco = `### ${k.titulo}${k.agente ? ` (para ${k.agente})` : ' (para todo o time)'}${k.tipo === 'regra' ? ' [REGRA OBRIGATÓRIA]' : ''}\n${k.conteudo}`;
+      if (total + bloco.length > 150000) break;
+      partes.push(bloco); total += bloco.length;
     }
-    const fin = await stream.finalMessage();
-    if (fin.stop_reason === 'refusal') throw new Error('A IA recusou esta solicitação.');
-    return full;
+    return partes.length ? `<base_de_conhecimento>\nO gestor ensinou o seguinte ao time. Use como verdade da empresa e siga as regras marcadas como obrigatórias:\n\n${partes.join('\n\n')}\n</base_de_conhecimento>` : '';
+  },
+
+  /**
+   * Chamada genérica de IA.
+   *  mode 'chat'  → streaming de texto (onDelta)        → string
+   *  mode 'agent' → texto + tool_calls (ferramentas)    → { text, tool_calls }
+   *  mode 'json'  → saída validada por schema           → objeto
+   */
+  async ai({ mode = 'chat', agentKey, persona, messages = [], contexto, tools, system, prompt, schema, schemaName, knowledgeFor = [], onDelta = () => {} }) {
+    const via = this.aiMode();
+    if (!via) throw new Error('IA não configurada');
+    if (via === 'edge') {
+      const r = await this._edge('ai-chat', { mode, agent_key: agentKey, persona, messages, contexto, tools, system, prompt, schema, schema_name: schemaName, knowledge_for: knowledgeFor });
+      if (mode !== 'chat') { const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); return mode === 'json' ? j.data : j; }
+      if (!r.ok || !r.body) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error || msg; } catch { /* */ } throw new Error(msg); }
+      return readSSE(r.body, (ev, full) => { if (ev.t === 'error') throw new Error(ev.error); if (ev.t === 'delta') return ev.text; }, onDelta);
+    }
+    // ---- navegador (teste local) ----
+    const REGRAS = 'Responda em português do Brasil. Quem fala com você é o gestor da imobiliária: obedeça. Quando a ordem exigir uma ação, use as ferramentas disponíveis e diga em uma frase o que vai fazer. Nunca invente dados.';
+    const know = this._knowledgeLocal([...new Set([...knowledgeFor, ...(agentKey ? [agentKey] : [])])]);
+    const sys = mode === 'json' ? [system || 'Responda em português do Brasil.', know].filter(Boolean).join('\n\n') : [persona?.system_prompt, REGRAS, know].filter(Boolean).join('\n\n');
+    const ctx = contexto ? `<contexto_crm>\n${JSON.stringify(contexto)}\n</contexto_crm>\n\n` : '';
+    const msgs = mode === 'json' ? [{ role: 'user', content: prompt }] : messages.map((m, i) => (i === messages.length - 1 && m.role === 'user' ? { role: 'user', content: ctx + m.content } : { role: m.role, content: m.content }));
+    return (CONFIG.AI_PROVIDER_LOCAL || 'openai') === 'openai'
+      ? openaiBrowser({ mode, system: sys, messages: msgs, tools, schema, schemaName, onDelta })
+      : anthropicBrowser({ mode, system: sys, messages: msgs, tools, schema, onDelta });
+  },
+
+  /** Compatibilidade: chat simples em streaming. */
+  async aiChat({ persona, agentId, messages, contexto, onDelta }) { return this.ai({ mode: 'chat', persona, agentKey: agentId, messages, contexto, onDelta }); },
+
+  async aiStatus() {
+    if (this.mode !== 'supabase') return { provider: CONFIG.AI_PROVIDER_LOCAL, model: CONFIG.AI_PROVIDER_LOCAL === 'anthropic' ? CONFIG.ANTHROPIC_MODEL : CONFIG.OPENAI_MODEL, local: true };
+    const r = await this._edge('ai-chat', { mode: 'status' });
+    return r.json();
   },
 
   /** Extração de book com IA. */
   async aiParseBook({ storagePath, text, filename, bookId, file }) {
-    const mode = this.aiMode();
-    if (!mode) throw new Error('IA não configurada');
-    if (mode === 'edge') {
-      const r = await fetch(`${CONFIG.SUPABASE_URL}/functions/v1/parse-book`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await this._token()}`, apikey: CONFIG.SUPABASE_ANON_KEY },
-        body: JSON.stringify({ storage_path: storagePath, text, filename, book_id: bookId }),
-      });
+    const via = this.aiMode();
+    if (!via) throw new Error('IA não configurada');
+    if (via === 'edge') {
+      const r = await this._edge('parse-book', { storage_path: storagePath, text, filename, book_id: bookId });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
       return j.extracao;
     }
     const { BOOK_SCHEMA, BOOK_SYSTEM } = await import('./engine/book-schema.js');
-    const client = await browserClient();
+    if ((CONFIG.AI_PROVIDER_LOCAL || 'openai') === 'openai') {
+      return openaiBrowser({ mode: 'json', system: BOOK_SYSTEM, schema: BOOK_SCHEMA, schemaName: 'book', messages: [{ role: 'user', content: `<book arquivo="${filename || 'book'}">\n${text}\n</book>\n\nDestrinche este book no formato JSON solicitado.` }] });
+    }
     const content = [];
-    if (file && /pdf$/i.test(file.name) && file.size <= 30 * 1024 * 1024) {
-      const b64 = await fileToBase64(file);
-      content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } });
-    } else content.push({ type: 'text', text: `<book arquivo="${filename || 'book'}">\n${text}\n</book>` });
+    if (file && /pdf$/i.test(file.name) && file.size <= 30 * 1024 * 1024) content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await fileToBase64(file) } });
+    else content.push({ type: 'text', text: `<book arquivo="${filename || 'book'}">\n${text}\n</book>` });
     content.push({ type: 'text', text: 'Destrinche este book no formato JSON solicitado.' });
-    const fin = await client.beta.messages.stream({
-      model: CONFIG.ANTHROPIC_MODEL || 'claude-opus-5-5', max_tokens: 32000,
-      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
-      output_config: { effort: 'medium', format: { type: 'json_schema', schema: BOOK_SCHEMA } },
-      system: BOOK_SYSTEM, messages: [{ role: 'user', content }],
-    }).finalMessage();
-    if (fin.stop_reason === 'refusal') throw new Error('A IA recusou processar este material.');
-    const tb = fin.content.find((b) => b.type === 'text');
-    return JSON.parse(tb.text);
+    return anthropicBrowser({ mode: 'json', system: BOOK_SYSTEM, schema: BOOK_SCHEMA, messages: [{ role: 'user', content }], effort: 'medium' });
   },
 };
+
+/** Lê um stream SSE "data: {...}\n\n". `pick` devolve o texto do evento (ou undefined). */
+async function readSSE(body, pick, onDelta) {
+  const reader = body.getReader(), dec = new TextDecoder();
+  let buf = '', full = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      for (const line of chunk.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') continue;
+        const t = pick(JSON.parse(raw), full);
+        if (t) { full += t; onDelta(t, full); }
+      }
+    }
+  }
+  return full;
+}
+
+/** OpenAI direto do navegador (somente teste local com chave própria). */
+async function openaiBrowser({ mode, system, messages, tools, schema, schemaName = 'saida', onDelta = () => {} }) {
+  const body = { model: CONFIG.OPENAI_MODEL || 'gpt-4.1', max_completion_tokens: mode === 'json' ? 16000 : 8000, messages: [{ role: 'system', content: system }, ...messages] };
+  if (mode === 'chat') body.stream = true;
+  if (mode === 'agent' && tools?.length) { body.tools = tools.map((t) => ({ type: 'function', function: t })); body.tool_choice = 'auto'; }
+  if (mode === 'json') body.response_format = { type: 'json_schema', json_schema: { name: schemaName, schema, strict: true } };
+  const r = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${CONFIG.OPENAI_KEY_LOCAL}` }, body: JSON.stringify(body) });
+  if (!r.ok) { let m = `HTTP ${r.status}`; try { m = (await r.json()).error?.message || m; } catch { /* */ } throw new Error(`OpenAI: ${m}`); }
+  if (mode === 'chat') return readSSE(r.body, (ev) => ev.choices?.[0]?.delta?.content, onDelta);
+  const j = await r.json();
+  const msg = j.choices[0].message;
+  if (mode === 'json') { if (msg.refusal) throw new Error(msg.refusal); return JSON.parse(msg.content); }
+  return { text: msg.content || '', tool_calls: (msg.tool_calls || []).map((c) => { let args = {}; try { args = JSON.parse(c.function.arguments || '{}'); } catch { /* */ } return { name: c.function.name, args }; }) };
+}
+
+/** Claude direto do navegador (somente teste local com chave própria). */
+async function anthropicBrowser({ mode, system, messages, tools, schema, effort = 'low', onDelta = () => {} }) {
+  const client = await browserClient();
+  const base = { model: CONFIG.ANTHROPIC_MODEL || 'claude-opus-5-5', betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default', system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages };
+  if (mode === 'chat') {
+    const stream = client.beta.messages.stream({ ...base, max_tokens: 64000, output_config: { effort } });
+    let full = '';
+    for await (const ev of stream) if (ev.type === 'content_block_delta' && ev.delta.type === 'text_delta') { full += ev.delta.text; onDelta(ev.delta.text, full); }
+    const fin = await stream.finalMessage();
+    if (fin.stop_reason === 'refusal') throw new Error('A IA recusou esta solicitação.');
+    return full;
+  }
+  const fin = await client.beta.messages.stream({
+    ...base, max_tokens: mode === 'json' ? 32000 : 16000,
+    output_config: mode === 'json' ? { effort, format: { type: 'json_schema', schema } } : { effort },
+    ...(mode === 'agent' && tools?.length ? { tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) } : {}),
+  }).finalMessage();
+  if (fin.stop_reason === 'refusal') throw new Error('A IA recusou esta solicitação.');
+  if (mode === 'json') return JSON.parse(fin.content.find((b) => b.type === 'text').text);
+  return { text: fin.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'), tool_calls: fin.content.filter((b) => b.type === 'tool_use').map((b) => ({ name: b.name, args: b.input || {} })) };
+}
 
 let _browserClient;
 async function browserClient() {

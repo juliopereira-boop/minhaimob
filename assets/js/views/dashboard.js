@@ -2,6 +2,7 @@ import { esc, brl, brlK, num, pct, rel, scoreBar, tempBadge, STAGES, stageLabel,
 import { radarDoDia, forecast, STAGE_SLA } from '../engine/scoring.js';
 import { diagnosticoEstoque } from '../engine/pricing.js';
 import { enrichUnidades } from '../engine/agents.js';
+import { usarDadosReais } from './ajustes.js';
 
 export async function render(el, ctx) {
   const d = ctx.data;
@@ -59,6 +60,7 @@ export async function render(el, ctx) {
     <div class="card kpi"><div class="label">Estoque disponível</div><div class="value">${disp.length}</div><div class="delta muted">${brlK(disp.reduce((s, u) => s + (u.valor || 0), 0))} em VGV</div></div>
   </div>
 
+  ${ctx.db.temDemo(d) && (ctx.db.mode === 'local' || ['owner', 'admin', 'gestor'].includes(ctx.db.role)) ? `<div class="callout blue mt row between wrap"><span>◆ Você está vendo <b>dados de demonstração</b>. Quando quiser começar de verdade, remova tudo que é fictício com um clique.</span><button class="btn sm primary" id="b-real">✓ Usar dados reais</button></div>` : ''}
   ${insights.length ? `<div class="grid mt" style="gap:8px">${insights.map((i) => `<div class="callout ${i.c} row between"><span>${esc(i.t)}</span><a class="btn xs" href="${i.a}">${i.b} →</a></div>`).join('')}</div>` : ''}
 
   <div class="grid g3 mt">
@@ -108,6 +110,7 @@ export async function render(el, ctx) {
         </div>`).join('') || '<div class="empty">Sem clientes ainda</div>'}</div>
     </div>
   </div>`;
+  const br = el.querySelector('#b-real'); if (br) br.onclick = async () => { if (await usarDadosReais(ctx)) render(el, ctx); };
 }
 
 export function onData() { if (location.hash.startsWith('#/dashboard') || location.hash === '' || location.hash === '#/') window.dispatchEvent(new HashChangeEvent('hashchange')); }

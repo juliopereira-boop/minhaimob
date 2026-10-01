@@ -1,4 +1,5 @@
 import { db } from './db.js';
+import { CONFIG } from './config.js';
 import { $, $$, esc, h, toast, modal, initials, debounce, brl } from './ui.js';
 
 const ROUTES = {
@@ -51,7 +52,9 @@ function header() {
   const b = $('#mode-banner');
   if (db.isSuperadmin) $('#nav-admin').classList.remove('hide');
   if (db.mode === 'local') {
-    b.innerHTML = `<div class="mode-banner">◆ Modo local (dados no seu navegador). Conecte o Supabase em <a href="#/ajustes" style="color:inherit;text-decoration:underline">Configurações</a> para usar com a equipe.</div>`;
+    b.innerHTML = CONFIG.SUPABASE_URL
+      ? `<div class="mode-banner">◆ Modo demonstração: os dados ficam só neste navegador. <a href="index.html" style="color:inherit;text-decoration:underline">Entrar com minha conta</a></div>`
+      : `<div class="mode-banner">◆ Modo local (dados no seu navegador). Conecte o banco em <a href="#/ajustes" style="color:inherit;text-decoration:underline">Configurações</a> para usar com a equipe.</div>`;
   } else if (db.org?.status === 'trial' && db.org?.trial_ate) {
     const dias = Math.ceil((new Date(db.org.trial_ate + 'T23:59:59') - Date.now()) / 864e5);
     b.innerHTML = `<div class="mode-banner">◆ Teste grátis: ${dias} dia${dias === 1 ? '' : 's'} restante${dias === 1 ? '' : 's'} (até ${new Date(db.org.trial_ate + 'T12:00').toLocaleDateString('pt-BR')}). ${esc(db.conta?.contato_suporte ? 'Assine com: ' + db.conta.contato_suporte : 'Fale com o suporte para assinar.')}</div>`;
@@ -69,7 +72,7 @@ function onboarding() {
         <div class="field"><label>Nome da imobiliária / equipe</label><input name="nome" required placeholder="Ex.: Imobiliária Ilha" /></div>
         <div class="field-row"><div class="field"><label>Cidade</label><input name="cidade" value="São Luís" /></div>
         <div class="field"><label>UF</label><input name="uf" value="MA" maxlength="2" /></div></div>
-        <label class="check mt-s"><input type="checkbox" name="demo" checked /> Carregar dados de demonstração para explorar</label>
+        <label class="check mt-s"><input type="checkbox" name="demo" /> Carregar dados de demonstração para explorar (dá para remover depois)</label>
         <div class="row mt" style="justify-content:flex-end"><button class="btn primary" type="submit">Criar e entrar</button></div>
       </form>`);
     m.el.querySelector('#f-onb').onsubmit = async (ev) => {

@@ -121,9 +121,16 @@ create table if not exists public.planos (
 );
 insert into public.planos (id, nome, valor_mensal, limite_usuarios, limite_unidades, recursos, ordem) values
   ('starter',    'Starter',    197,  3,    300,  '["CRM e pipeline","Destrinchar book (local)","Simulador CEF","Academia"]', 1),
-  ('pro',        'Pro',        497,  10,   2000, '["Tudo do Starter","IA Claude (book e agentes)","Escritório 3D","Anúncios com IA"]', 2),
+  ('pro',        'Pro',        497,  10,   2000, '["Tudo do Starter","IA (book e corretores virtuais)","Escritório 3D","Anúncios com IA"]', 2),
   ('enterprise', 'Enterprise', 1490, null, null, '["Tudo do Pro","Usuários ilimitados","Suporte prioritário","Onboarding dedicado"]', 3)
 on conflict (id) do nothing;
+do $$ begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'planos' and column_name = 'ia_habilitada') then
+    alter table public.planos add column ia_habilitada boolean not null default true;
+    update public.planos set ia_habilitada = false where id = 'starter';   -- só na criação da coluna
+  end if;
+end $$;
 
 create table if not exists public.platform_config (
   id                     int primary key default 1 check (id = 1),
@@ -633,6 +640,60 @@ create table if not exists public.audit_log (
 );
 
 -- ============================================================================
+-- 12b. DADOS DE DEMONSTRAÇÃO (marcação) + CONHECIMENTO E INTERAÇÕES DOS AGENTES
+-- ============================================================================
+alter table public.empreendimentos add column if not exists demo boolean not null default false;
+alter table public.leads add column if not exists demo boolean not null default false;
+alter table public.comparaveis add column if not exists demo boolean not null default false;
+
+-- Base de conhecimento dos corretores virtuais (agente null = vale para todos)
+create table if not exists public.ai_conhecimento (
+  id           uuid primary key default gen_random_uuid(),
+  org_id       uuid not null references public.orgs(id) on delete cascade,
+  agente       text,                                   -- ana | bruno | carla | diego | elisa | fabio | null
+  titulo       text not null,
+  tipo         text not null default 'texto',          -- texto | arquivo | regra | treinamento
+  conteudo     text not null,
+  fonte        text,                                   -- upload, manual, chat, "treinamento: Elisa"
+  arquivo_nome text,
+  ativo        boolean not null default true,
+  created_by   uuid references auth.users(id),
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+create index if not exists idx_conh_org_agente on public.ai_conhecimento(org_id, agente) where ativo;
+
+-- Conversas entre agentes (treinamentos, reuniões, alinhamentos)
+create table if not exists public.ai_interacoes (
+  id              uuid primary key default gen_random_uuid(),
+  org_id          uuid not null references public.orgs(id) on delete cascade,
+  tipo            text not null default 'conversa',    -- treinamento | conversa | reuniao
+  participantes   text[] not null,
+  iniciador       text,
+  tema            text,
+  transcricao     jsonb not null default '[]'::jsonb,  -- [{agente, fala}]
+  resultado       text,
+  conhecimento_id uuid references public.ai_conhecimento(id) on delete set null,
+  created_by      uuid references auth.users(id),
+  created_at      timestamptz not null default now()
+);
+create index if not exists idx_inter_org on public.ai_interacoes(org_id, created_at desc);
+
+-- Consumo de IA por cliente (gravado pela Edge Function)
+create table if not exists public.ai_uso (
+  id         bigserial primary key,
+  org_id     uuid references public.orgs(id) on delete cascade,
+  user_id    uuid,
+  modo       text,
+  provedor   text,
+  modelo     text,
+  tokens_in  int,
+  tokens_out int,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_ai_uso_org on public.ai_uso(org_id, created_at desc);
+
+-- ============================================================================
 -- 13. FUNÇÕES UTILITÁRIAS
 -- ============================================================================
 create or replace function public.fn_touch_updated_at()
@@ -645,7 +706,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['orgs','profiles','empreendimentos','tipologias','unidades','books','leads','deals','ai_conversations']
+  foreach t in array array['orgs','profiles','empreendimentos','tipologias','unidades','books','leads','deals','ai_conversations','ai_conhecimento']
   loop
     execute format('drop trigger if exists trg_touch_%1$s on public.%1$s', t);
     execute format('create trigger trg_touch_%1$s before update on public.%1$s for each row execute function public.fn_touch_updated_at()', t);
@@ -1216,6 +1277,9 @@ begin
   if exists (select 1 from public.empreendimentos where org_id = p_org and nome = 'Residencial Maré Alta') then
     return jsonb_build_object('aviso', 'dados de demonstração já carregados');
   end if;
+  if exists (select 1 from public.orgs where id = p_org and (config->>'dados_reais')::boolean) then
+    return jsonb_build_object('aviso', 'imobiliária usando dados reais — demonstração desativada');
+  end if;
 
   insert into public.empreendimentos (org_id, nome, construtora, padrao, status_obra, previsao_entrega, bairro, cidade, uf, lat, lng,
     torres, andares, unidades_por_andar, total_unidades, elevadores, valor_min, valor_max, condominio_estimado, programa, lazer, diferenciais, descricao, created_by)
@@ -1323,9 +1387,35 @@ begin
     (p_org, 'portal', 'Apto 3q nascente', 'São Luís', 'Cohama', 3, 2, 78, 470000, 6026, 52),
     (p_org, 'portal', 'Apto 3q Renascença', 'São Luís', 'Renascença', 3, 2, 105, 690000, 6571, 47);
 
+  -- marca tudo que foi criado nesta transação como demonstração (now() = início da transação)
+  update public.empreendimentos set demo = true where org_id = p_org and id in (e1, e2, e3, e4);
+  update public.leads set demo = true where org_id = p_org and created_at = now();
+  update public.comparaveis set demo = true where org_id = p_org and created_at = now();
   perform public.fn_recalcular_tudo(p_org);
   return jsonb_build_object('unidades', n_u, 'leads', n_l);
 end $$;
+
+-- Remove TODOS os dados fictícios e marca a org como "dados reais"
+create or replace function public.fn_limpar_demo(p_org uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare n_l int; n_e int; n_c int;
+begin
+  if not (p_org in (select public.fn_my_orgs()) and public.fn_is_manager(p_org)) then
+    raise exception 'apenas gestores da imobiliária podem fazer isso';
+  end if;
+  delete from public.leads where org_id = p_org and (demo or email like '%@exemplo.com'
+    or nome in ('Mariana Costa','Rafael Mendes','Dr. Henrique Sales','Juliana Ferreira','Carlos & Ana Ribeiro','Pedro Henrique Lima'));
+  get diagnostics n_l = row_count;
+  delete from public.empreendimentos where org_id = p_org and (demo or construtora = 'Construtora Demo');
+  get diagnostics n_e = row_count;
+  delete from public.comparaveis where org_id = p_org and (demo or (fonte = 'portal' and titulo in (
+    'Apto 2q vista mar','Apto 3q varanda gourmet','Apto 2q condomínio clube','Apto 4 suítes frente mar',
+    'Apto 2q próximo shopping','Apto 3q nascente','Apto 3q Renascença')));
+  get diagnostics n_c = row_count;
+  update public.orgs set config = config || jsonb_build_object('dados_reais', true, 'dados_reais_em', now()) where id = p_org;
+  return jsonb_build_object('leads', n_l, 'empreendimentos', n_e, 'comparaveis', n_c);
+end $$;
+grant execute on function public.fn_limpar_demo(uuid) to authenticated;
 
 -- ============================================================================
 -- 21. VIEWS DE DASHBOARD (security_invoker respeita RLS)
@@ -1397,8 +1487,8 @@ declare
   t text;
   tenant_tables text[] := array['empreendimentos','tipologias','unidades','books','leads','deals','deal_stage_history',
     'activities','matches','simulacoes','ai_agents','ai_conversations','ai_messages','scripts','objecoes',
-    'treinamentos','comparaveis','metas','notificacoes'];
-  manager_delete text[] := array['empreendimentos','tipologias','unidades','ai_agents','metas'];
+    'treinamentos','comparaveis','metas','notificacoes','ai_conhecimento','ai_interacoes'];
+  manager_delete text[] := array['empreendimentos','tipologias','unidades','ai_agents','metas','ai_conhecimento'];
 begin
   foreach t in array tenant_tables loop
     execute format('alter table public.%I enable row level security', t);
@@ -1530,6 +1620,25 @@ drop policy if exists conv_del on public.org_convites;
 create policy conv_del on public.org_convites for delete using (
   public.fn_is_superadmin() or (org_id in (select public.fn_my_orgs()) and public.fn_is_manager(org_id)));
 
+alter table public.ai_uso enable row level security;
+drop policy if exists ai_uso_sel on public.ai_uso;
+create policy ai_uso_sel on public.ai_uso for select using (public.fn_is_superadmin() or (org_id in (select public.fn_my_orgs()) and public.fn_is_manager(org_id)));
+drop policy if exists ai_uso_ins on public.ai_uso;
+create policy ai_uso_ins on public.ai_uso for insert with check (org_id in (select public.fn_my_orgs()) and user_id = auth.uid());
+
+-- Contexto de IA do usuário: org liberada + plano com IA
+create or replace function public.fn_ia_permitida()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare r record;
+begin
+  select o.id, coalesce(p.ia_habilitada, true) ia into r
+    from public.org_members m join public.orgs o on o.id = m.org_id left join public.planos p on p.id = o.plano
+    where m.user_id = auth.uid() and m.active and public.fn_org_liberada(o.status, o.trial_ate)
+    order by m.created_at limit 1;
+  return jsonb_build_object('org_id', r.id, 'permitida', public.fn_is_superadmin() or coalesce(r.ia, false));
+end $$;
+grant execute on function public.fn_ia_permitida() to authenticated;
+
 -- Situação da conta do usuário logado (usado no login, ignora bloqueio)
 create or replace function public.fn_minha_conta()
 returns jsonb language plpgsql stable security definer set search_path = public as $$
@@ -1537,8 +1646,8 @@ declare r record; cfg public.platform_config%rowtype;
 begin
   if auth.uid() is null then return null; end if;
   select * into cfg from public.platform_config where id = 1;
-  select o.id, o.nome, o.status, o.trial_ate, o.plano, o.cidade, o.uf, m.role
-    into r from public.org_members m join public.orgs o on o.id = m.org_id
+  select o.id, o.nome, o.status, o.trial_ate, o.plano, o.cidade, o.uf, o.config, m.role, coalesce(p.ia_habilitada, true) ia
+    into r from public.org_members m join public.orgs o on o.id = m.org_id left join public.planos p on p.id = o.plano
     where m.user_id = auth.uid() and m.active order by m.created_at limit 1;
   return jsonb_build_object(
     'is_superadmin', public.fn_is_superadmin(),
@@ -1546,7 +1655,8 @@ begin
     'contato_suporte', cfg.contato_suporte,
     'org', case when r.id is null then null else jsonb_build_object(
       'id', r.id, 'nome', r.nome, 'status', r.status, 'trial_ate', r.trial_ate, 'plano', r.plano,
-      'cidade', r.cidade, 'uf', r.uf, 'liberada', public.fn_org_liberada(r.status, r.trial_ate)) end,
+      'cidade', r.cidade, 'uf', r.uf, 'config', r.config, 'ia', r.ia,
+      'liberada', public.fn_org_liberada(r.status, r.trial_ate)) end,
     'role', r.role);
 end $$;
 
@@ -1592,12 +1702,14 @@ begin
 end $$;
 
 -- Lista de clientes com métricas de uso (agregadas — sem dados pessoais dos leads)
+drop function if exists public.fn_admin_clientes();
 create or replace function public.fn_admin_clientes()
 returns table (
   id uuid, nome text, slug text, cnpj text, cidade text, uf text, status text, plano text, valor_mensal numeric,
   trial_ate date, limite_usuarios int, contato_nome text, contato_email text, contato_telefone text, observacoes text,
   created_at timestamptz, liberada boolean, donos text, usuarios bigint, convites_pendentes bigint, leads bigint,
-  empreendimentos bigint, unidades bigint, negocios_abertos bigint, vendas bigint, vgv_vendido numeric, ultima_atividade timestamptz
+  empreendimentos bigint, unidades bigint, negocios_abertos bigint, vendas bigint, vgv_vendido numeric, ultima_atividade timestamptz,
+  ia_chamadas_30d bigint, ia_tokens_30d bigint
 ) language plpgsql stable security definer set search_path = public as $$
 begin
   perform public._fn_exigir_superadmin();
@@ -1615,7 +1727,9 @@ begin
     (select count(*) from public.deals d where d.org_id = o.id and d.stage = 'ganho'),
     (select coalesce(sum(coalesce(d.valor_proposta, d.valor)), 0) from public.deals d where d.org_id = o.id and d.stage = 'ganho'),
     greatest((select max(a.created_at) from public.activities a where a.org_id = o.id),
-             (select max(l.updated_at) from public.leads l where l.org_id = o.id))
+             (select max(l.updated_at) from public.leads l where l.org_id = o.id)),
+    (select count(*) from public.ai_uso x where x.org_id = o.id and x.created_at > now() - interval '30 days'),
+    (select coalesce(sum(coalesce(x.tokens_in,0) + coalesce(x.tokens_out,0)), 0) from public.ai_uso x where x.org_id = o.id and x.created_at > now() - interval '30 days')::bigint
   from public.orgs o order by o.created_at desc;
 end $$;
 

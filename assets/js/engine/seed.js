@@ -14,7 +14,7 @@ export function demoData(uid, userId) {
       lazer: ['borda infinita', 'spa', 'sauna', 'academia', 'cinema', 'adega', 'brinquedoteca', 'espaço gourmet', 'heliponto'], diferenciais: ['frente mar', 'automação residencial', 'gerador', 'closet'], descricao: 'Alto padrão frente mar no Calhau, 2 apartamentos por andar.' },
     { id: e4, nome: 'Vila Cohama Life', construtora: 'Construtora Demo', padrao: 'medio', status_obra: 'em_obra', previsao_entrega: day(210), bairro: 'Cohama', cidade: 'São Luís', uf: 'MA', lat: -2.508, lng: -44.244, torres: 3, andares: 12, unidades_por_andar: 6, total_unidades: 216, elevadores: 2, valor_min: 329000, valor_max: 455000, condominio_estimado: 420, programa: 'SBPE', aceita_fgts: true, ativo: true,
       lazer: ['piscina', 'academia', 'espaço gourmet', 'playground', 'pet place', 'bicicletário', 'mini mercado'], diferenciais: ['varanda', 'cozinha integrada'], descricao: 'Localização central, próximo a shopping, escolas e hospitais.' },
-  ];
+  ].map((e) => ({ ...e, demo: true }));
   const tipDefs = [
     [e1, 'Tipo A — 2 suítes', 2, 2, 3, 1, 68.4, true, true, 489000], [e1, 'Tipo B — 3 quartos', 3, 1, 3, 2, 92.15, true, true, 690000], [e1, 'Cobertura', 3, 3, 4, 3, 148, true, true, 812000],
     [e2, 'Tipo 1 — 2 quartos', 2, 0, 1, 1, 42.3, false, false, 199000], [e2, 'Tipo 2 — 2 quartos c/ suíte', 2, 1, 2, 1, 48.9, true, false, 239000],
@@ -31,7 +31,7 @@ export function demoData(uid, userId) {
         posicao: i % 2 === 0 ? 'frente' : 'fundos', status: i === 4 ? 'reservado' : 'disponivel', valor, valor_tabela: valor, desconto_max_pct: 4, entrada_minima: Math.round(t.valor_base * 0.1) });
     }
   }
-  const L = (o) => ({ id: uid(), responsavel_id: userId, consentimento_lgpd: true, arquivado: false, created_at: iso(-20 * D), cidade_interesse: 'São Luís', ...o });
+  const L = (o) => ({ id: uid(), demo: true, responsavel_id: userId, consentimento_lgpd: true, arquivado: false, created_at: iso(-20 * D), cidade_interesse: 'São Luís', ...o });
   const leads = [
     L({ nome: 'Mariana Costa', telefone: '(98) 98111-2201', email: 'mariana@exemplo.com', renda_bruta: 7800, renda_composta: 4200, fgts: 38000, entrada_disponivel: 60000, score_credito: 760, objetivo: 'moradia', quartos_min: 2, vagas_min: 1, orcamento_max: 520000, bairros_interesse: ["Ponta d'Areia", 'Calhau'], amenidades_desejadas: ['piscina', 'academia', 'pet place'], prazo_decisao: '30d', origem: 'instagram', estado_civil: 'casada', dependentes: 1, profissao: 'Engenheira', ultimo_contato: iso(-1 * D) }),
     L({ nome: 'Rafael Mendes', telefone: '(98) 98222-3302', email: 'rafael@exemplo.com', renda_bruta: 3900, fgts: 21000, entrada_disponivel: 8000, score_credito: 640, objetivo: 'moradia', quartos_min: 2, vagas_min: 1, orcamento_max: 260000, bairros_interesse: ['Turu', 'Cohama'], amenidades_desejadas: ['playground', 'piscina'], prazo_decisao: 'imediato', origem: 'plantao', estado_civil: 'solteiro', profissao: 'Técnico de enfermagem', ultimo_contato: iso(-3 * 3600000) }),
@@ -48,7 +48,7 @@ export function demoData(uid, userId) {
     ['Apto 2q vista mar', "Ponta d'Areia", 2, 1, 70, 545000, 41], ['Apto 3q varanda gourmet', "Ponta d'Areia", 3, 2, 95, 720000, 63], ['Apto 2q condomínio clube', 'Turu', 2, 1, 45, 215000, 28],
     ['Apto 4 suítes frente mar', 'Calhau', 4, 4, 260, 1650000, 120], ['Apto 2q próximo shopping', 'Cohama', 2, 1, 60, 349000, 35], ['Apto 3q nascente', 'Cohama', 3, 2, 78, 470000, 52],
     ['Apto 3q Renascença', 'Renascença', 3, 2, 105, 690000, 47], ['Apto 2q Turu MCMV', 'Turu', 2, 1, 48, 235000, 22], ['Apto 3q Calhau', 'Calhau', 3, 2, 120, 860000, 70],
-  ].map(([titulo, bairro, q, v, area, valor, dias]) => ({ id: uid(), fonte: 'portal', titulo, cidade: 'São Luís', bairro, quartos: q, vagas: v, area, valor, valor_m2: Math.round(valor / area), dias_anunciado: dias }));
+  ].map(([titulo, bairro, q, v, area, valor, dias]) => ({ id: uid(), fonte: 'portal', titulo, cidade: 'São Luís', bairro, quartos: q, vagas: v, area, valor, valor_m2: Math.round(valor / area), dias_anunciado: dias, demo: true }));
   const atividades = [
     { id: uid(), lead_id: leads[0].id, deal_id: deals[0].id, tipo: 'whatsapp', titulo: 'Enviou simulação', resultado: 'positivo', concluido: true, created_at: iso(-1 * D) },
     { id: uid(), lead_id: leads[1].id, deal_id: deals[1].id, tipo: 'ligacao', titulo: 'Qualificação inicial', resultado: 'positivo', concluido: true, created_at: iso(-3 * 3600000) },
