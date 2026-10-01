@@ -2074,6 +2074,14 @@ begin
   return jsonb_build_object('memorias_esquecidas', n_m, 'eventos_removidos', n_e);
 end $$;
 
+-- Acesso às tabelas da sociedade só para usuários logados (a RLS limita à própria imobiliária)
+grant select, insert, update, delete on public.agent_mundo, public.agent_estado, public.agent_relacoes,
+  public.agent_memorias, public.agent_eventos, public.agent_conversas, public.agent_mensagens,
+  public.agent_objetivos, public.agent_acoes to authenticated;
+revoke all on public.agent_mundo, public.agent_estado, public.agent_relacoes, public.agent_memorias,
+  public.agent_eventos, public.agent_conversas, public.agent_mensagens, public.agent_objetivos,
+  public.agent_acoes from anon;
+
 grant execute on function public.fn_sociedade_lock(uuid, int) to authenticated;
 grant execute on function public.fn_sociedade_gastar(uuid, int) to authenticated;
 grant execute on function public.fn_sociedade_manutencao(uuid) to authenticated;

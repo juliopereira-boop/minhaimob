@@ -9,6 +9,7 @@ import { forecast } from './engine/scoring.js';
 import { mountChat } from './views/ia.js';
 import { mountFeed } from './views/time.js';
 import { bus } from './engine/orquestrador.js';
+import { iniciarSociedade, socBus } from './sociedade/navegador.js';
 
 const ctx = { db, data: null, async refresh() { ctx.data = await db.loadAll(); return ctx.data; }, go: (r) => (location.href = 'app.html#/' + r) };
 window.__mi = ctx;
@@ -21,7 +22,7 @@ if (!ok) throw new Error('auth');
 if (db.mode === 'local' && !db.store.t('empreendimentos').length && !localStorage.getItem('mi_seeded')) { await db.rpc('fn_seed_demo'); localStorage.setItem('mi_seeded', '1'); }
 await ctx.refresh();
 db.realtime();
-db.on(async () => { await ctx.refresh(); drawWall(); hudKpis(); });
+db.on(async (t) => { if (/^agent_/.test(t)) return; await ctx.refresh(); drawWall(); hudKpis(); });
 
 const host = $('#scene');
 let renderer;
@@ -377,6 +378,7 @@ const LOC = {
   seat: (id) => ({ kind: 'seat', pos: DESKS[id].seat.clone(), enter: [DESKS[id].side.clone()], face: DESKS[id].facing > 0 ? 0 : Math.PI }),
   side: (id) => ({ kind: 'side', pos: DESKS[id].side.clone(), enter: [] }),
   coffee: () => ({ kind: 'coffee', pos: V(-15.6, 5.6), enter: [V(-13.2, 5.6)], face: Math.PI }),
+  cafe: (i) => { const p = [V(-14.2, 7.3), V(-11.8, 7.3), V(-13, 6.7), V(-14.2, 8.4)][i % 4]; return { kind: 'cafe', pos: p, enter: [V(-13.2, 5.6)], face: Math.atan2(-13 - p.x, 7.9 - p.z) }; },
   screen: () => { const x = pick([-6, 0, 6]) + (Math.random() - 0.5) * 1.2; return { kind: 'screen', pos: V(x, -8.6), enter: [], face: Math.PI }; },
   treinoProf: () => ({ kind: 'treino', pos: TR_PROF.clone(), enter: [V(TR.door, TR.z1 + 0.8), V(TR.door, TR.z1 - 0.8)], face: 0 }),
   treinoAluno: (i) => ({ kind: 'treino', pos: TR_ALUNOS[i % 2].clone(), enter: [V(TR.door, TR.z1 + 0.8), V(TR.door, TR.z1 - 0.8)], face: Math.PI }),
@@ -408,17 +410,8 @@ function decide(ag) {
   const r = Math.random();
   ag.next = 10 + Math.random() * 16;
   if (r < 0.55) { ag.status = pick(STATUS[ag.a.id]); ag.next = 8 + Math.random() * 14; return; }
-  if (r < 0.75) {
-    const other = pick(agents.filter((o) => o !== ag && o.state === 'sentado' && !o.locked));
-    if (!other) return;
-    ag.status = `💬 conversando com ${other.a.nome}`;
-    routeTo(ag, LOC.side(other.a.id), () => {
-      ag.state = 'parado';
-      ag.face = Math.atan2(other.root.position.x - ag.root.position.x, other.root.position.z - ag.root.position.z);
-      bubble(ag, '💬', 5000); setTimeout(() => bubble(other, '👍', 3000), 1600);
-      setTimeout(() => { if (!ag.locked) goHome(ag); }, 6500);
-    });
-  } else if (r < 0.88) {
+  if (r < 0.8) { ag.status = pick(STATUS[ag.a.id]); return; }   // conversas de verdade vêm da sociedade (abaixo)
+  if (r < 0.9) {
     ag.status = '☕ pegando café';
     routeTo(ag, LOC.coffee(), () => { ag.state = 'parado'; bubble(ag, '☕', 4000); setTimeout(() => { if (!ag.locked) goHome(ag); }, 5000); });
   } else {
@@ -522,6 +515,57 @@ const stage = {
 let _quadroTitulo = '';
 const quadroTitulo = () => _quadroTitulo;
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+// ---------------------------------------------------------------------------
+// Sociedade: conversas reais decididas pelos próprios agentes movem o escritório
+// ---------------------------------------------------------------------------
+const emCena = new Map();   // conversa_id → participantes em cena
+async function cenaSociedade(c) {
+  if (c.contexto?.conduzida || emCena.has(c.id)) return;      // ordens do gestor já são encenadas pelo stage
+  const ags = c.participantes.map((k) => byId[k]).filter(Boolean);
+  if (ags.length < 2 && c.tipo !== 'recado') return;
+  emCena.set(c.id, ags);
+  ags.forEach((g) => { g.locked = true; g.speed = 1.8; });
+  const [ini, ...resto] = ags;
+  logTicker(`${{ cafe: '☕', reuniao: '🤝', treinamento: '🎓', mentoria: '🧭' }[c.tipo] || '💬'} ${ags.map((g) => g.a.nome).join(' + ')}: ${c.tema}`);
+  if (c.tipo === 'cafe') { ags.forEach((g, i) => { g.status = '☕ café com o time'; routeTo(g, LOC.cafe(i), () => { g.state = 'parado'; }); }); }
+  else if (c.tipo === 'reuniao') { ags.forEach((g, i) => { g.status = `🤝 reunião: ${c.tema}`; routeTo(g, LOC.meeting(i), () => { g.state = 'reuniao'; g.sitting = true; }); }); }
+  else if (c.tipo === 'treinamento') {
+    _quadroTitulo = c.tema; quadroFalas.length = 0; drawQuadro(c.tema, [], `${ini.a.nome} treinando ${resto.map((g) => g.a.nome).join(', ')}`);
+    ini.status = `🎓 treinando ${resto[0]?.a.nome || ''}`; routeTo(ini, LOC.treinoProf(), () => { ini.state = 'parado'; });
+    resto.forEach((g, i) => { g.status = `🎓 em treinamento com ${ini.a.nome}`; routeTo(g, LOC.treinoAluno(i), () => { g.state = 'reuniao'; g.sitting = true; }); });
+  } else if (resto[0]) {
+    const b = resto[0];
+    ini.status = `💬 conversando com ${b.a.nome}`; b.status = `💬 conversando com ${ini.a.nome}`;
+    routeTo(ini, LOC.side(b.a.id), () => { ini.state = 'parado'; olhar(ini, b); });
+  }
+}
+function fimCena(c) {
+  const ags = emCena.get(c.id); if (!ags) return;
+  emCena.delete(c.id);
+  setTimeout(() => ags.forEach((g) => {
+    if ([...emCena.values()].some((x) => x.includes(g))) return;
+    g.locked = false;
+    if (g.loc?.kind === 'seat' && g.root.position.distanceTo(DESKS[g.a.id].seat) < 0.3) { g.state = 'sentado'; g.sitting = true; g.status = pick(STATUS[g.a.id]); return; }
+    goHome(g, () => (g.speed = 1.35));
+  }), 3500);
+}
+socBus.addEventListener('soc:conversa', (e) => {
+  const { fase, conversa: c } = e.detail;
+  if (fase === 'inicio') cenaSociedade(c);
+  else if (fase === 'convite') { const g = byId[c.iniciador]; if (g) bubble(g, c.tipo === 'cafe' ? '☕?' : '📣', 3500); }
+  else if (fase === 'fim') fimCena(c);
+});
+socBus.addEventListener('soc:mensagem', (e) => {
+  const { conversa: c, mensagem: m } = e.detail;
+  if (c.contexto?.conduzida) return;                            // o stage já mostra a fala
+  const g = byId[m.de]; if (!g) return;
+  if (!emCena.has(c.id) && c.status === 'aberta') cenaSociedade(c);
+  if (m.intencao === 'aceitar' || m.intencao === 'recusar') { bubble(g, m.intencao === 'aceitar' ? '👍' : '🙅', 3000); return; }
+  falaBalao(g, m.texto, Math.max(3500, Math.min(9000, m.texto.length * 55)));
+  if (c.tipo === 'treinamento') { quadroFalas.push(`${g.a.nome}: ${m.texto}`); drawQuadro(c.tema, quadroFalas); }
+});
+iniciarSociedade(ctx);
+
 bus.addEventListener('interacao:inicio', (e) => { _quadroTitulo = e.detail.tipo === 'treinamento' ? e.detail.tema : _quadroTitulo; logTicker(`${e.detail.tipo === 'treinamento' ? '🎓' : e.detail.tipo === 'reuniao' ? '🤝' : '💬'} ${(e.detail.participantes || []).map((k) => byId[k]?.a.nome).join(' + ')}: ${e.detail.tema}`); });
 
 // painel de conversas do time

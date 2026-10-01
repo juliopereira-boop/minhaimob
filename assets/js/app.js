@@ -13,6 +13,7 @@ const ROUTES = {
   mercado: () => import('./views/mercado.js'),
   marketing: () => import('./views/marketing.js'),
   academia: () => import('./views/academia.js'),
+  sociedade: () => import('./views/sociedade.js'),
   ajustes: () => import('./views/ajustes.js'),
 };
 
@@ -144,10 +145,12 @@ async function boot() {
   header();
   await ctx.refresh();
   db.realtime();
-  db.on(debounce(async (t) => {
+  const recarregar = debounce(async (t) => {
     await ctx.refresh();
     if (current?.onData) current.onData(t);
-  }, 400));
+  }, 400);
+  // tabelas da sociedade de agentes mudam o tempo todo e não afetam os dados do CRM
+  db.on((t) => { if (!/^agent_/.test(t)) recarregar(t); });
   globalSearch();
   $('#btn-menu').onclick = () => $('#sidebar').classList.toggle('open');
   $('#btn-theme').onclick = () => {
@@ -158,5 +161,7 @@ async function boot() {
   $('#btn-new-lead').onclick = async () => { const m = await import('./views/leads.js'); m.leadForm(ctx); };
   window.addEventListener('hashchange', route);
   route();
+  // os corretores virtuais vivem enquanto a plataforma está aberta
+  if (!db.bloqueio && db.orgId) import('./sociedade/navegador.js').then((m) => m.iniciarSociedade(ctx)).catch((e) => console.warn('[sociedade]', e));
 }
 boot().catch((e) => { console.error(e); $('#view').innerHTML = `<div class="callout red"><b>Falha ao iniciar.</b><br>${esc(e.message)}</div>`; });

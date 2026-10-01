@@ -102,3 +102,10 @@ export const TEMAS = {
   mercado: 'mercado', preco: 'preço e posicionamento', estoque: 'estoque', forecast: 'previsão de vendas',
 };
 export const temaDe = (tag) => TEMAS[tag] || tag;
+
+/** Tema livre (ordem do gestor) → tag de área. */
+export function tagDoTexto(t) {
+  const s = String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const mapa = [[/credit|cef|caixa|financ|repasse|document|renda/, 'credito'], [/objec|caro|desconto/, 'objecoes'], [/fech|negoci|proposta/, 'fechamento'], [/anunc|post|instagram|marketing|conteudo|reels|trafego|campanha/, 'marketing'], [/preco|mercado|estoque|tabela/, 'preco'], [/rotina|meta|produtiv|disciplin/, 'rotina'], [/lead|capt|prospec|quent|qualific|primeiro contato|whats/, 'leads']];
+  return (mapa.find(([re]) => re.test(s)) || [null, 'metodo'])[1];
+}

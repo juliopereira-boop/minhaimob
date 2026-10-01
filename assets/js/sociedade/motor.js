@@ -172,6 +172,7 @@ export class Sociedade {
     const rel = { turnos: 0, iniciativas: 0, memorias: 0, ia: 0 };
     try {
       if (!(await this.api.lock())) return { pulou: 'outro navegador/servidor está rodando o ciclo' };
+      this._travou = true;
       await this.carregar();
       await this.inicializar();
       const m = this.W.mundo;
@@ -191,7 +192,10 @@ export class Sociedade {
     } catch (e) {
       console.error('[sociedade] ciclo falhou', e);
       return { erro: e.message || String(e) };
-    } finally { this._rodando = false; }
+    } finally {
+      this._rodando = false;
+      if (this._travou) { this._travou = false; await this.api.liberar?.(this.W?.mundo).catch?.(() => null); }
+    }
   }
 
   async salvar() {
@@ -458,7 +462,7 @@ export class Sociedade {
     agentes.forEach((a) => this.setEstado(a, { atividade: null, local: 'mesa' }));
     await this.memorizar(mems);
     if (status === 'encerrada' && msgs.length >= 2 && c.tipo !== 'recado') await this.evento({ tipo: 'conversa_encerrada', ator: c.iniciador, resumo: `${c.participantes.map(nome).join(', ')} — ${c.tipo}: ${c.tema}`, importancia: 2, dados: { conversa_id: c.id, tipo: c.tipo } });
-    if (c.contexto?.ordem && status === 'encerrada') await this.api.registrarOrdem?.(c, msgs, resumo, apr);
+    if (c.contexto?.ordem && status === 'encerrada') c._registro = await this.api.registrarOrdem?.(c, msgs, resumo, apr).catch(() => null);
     this.emit('soc:conversa', { fase: 'fim', conversa: c });
   }
 

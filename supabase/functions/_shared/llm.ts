@@ -11,6 +11,10 @@ export const PROVIDER = (Deno.env.get("AI_PROVIDER") ?? (OPENAI_KEY && !ANTHROPI
 export const MODEL = PROVIDER === "openai"
   ? (Deno.env.get("OPENAI_MODEL") ?? "gpt-4.1")
   : (Deno.env.get("ANTHROPIC_MODEL") ?? "claude-opus-5-5");
+/** Modelo barato para as falas da sociedade de agentes (muitas chamadas curtas). */
+export const MODEL_LEVE = PROVIDER === "openai"
+  ? (Deno.env.get("OPENAI_MODEL_LEVE") ?? "gpt-4.1-mini")
+  : (Deno.env.get("ANTHROPIC_MODEL_LEVE") ?? "claude-haiku-4-5");
 
 export type Msg = { role: "user" | "assistant"; content: string };
 export type Tool = { name: string; description: string; parameters: Record<string, unknown> };
@@ -91,10 +95,10 @@ export async function complete(system: string, messages: Msg[], tools: Tool[] = 
 }
 
 /** Saída JSON validada por schema. `pdfBase64` só é usado no Claude (OpenAI recebe o texto). */
-export async function jsonOut(system: string, userText: string, schema: Record<string, unknown>, name = "saida", effort = "medium", pdfBase64?: string) {
+export async function jsonOut(system: string, userText: string, schema: Record<string, unknown>, name = "saida", effort = "medium", pdfBase64?: string, opts: { model?: string; max?: number } = {}) {
   if (PROVIDER === "openai") {
     const r = await openai!.chat.completions.create({
-      model: MODEL, max_completion_tokens: 16000,
+      model: opts.model ?? MODEL, max_completion_tokens: opts.max ?? 16000,
       messages: [{ role: "system", content: system }, { role: "user", content: userText }],
       response_format: { type: "json_schema", json_schema: { name, schema, strict: true } },
     });
@@ -108,10 +112,14 @@ export async function jsonOut(system: string, userText: string, schema: Record<s
   if (pdfBase64) content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } });
   content.push({ type: "text", text: userText });
   // deno-lint-ignore no-explicit-any
-  const fin = await claude!.beta.messages.stream(claudeBase({
-    max_tokens: 32000, output_config: { effort, format: { type: "json_schema", schema } },
-    system, messages: [{ role: "user", content }],
-  }) as any).finalMessage();
+  const leve = !!opts.model && opts.model !== MODEL;
+  const fin = await claude!.beta.messages.stream({
+    ...claudeBase({ max_tokens: opts.max ?? 32000, system, messages: [{ role: "user", content }] }),
+    ...(opts.model ? { model: opts.model } : {}),
+    // modelos leves podem não aceitar "effort": só o formato JSON
+    output_config: leve ? { format: { type: "json_schema", schema } } : { effort, format: { type: "json_schema", schema } },
+  // deno-lint-ignore no-explicit-any
+  } as any).finalMessage();
   if (fin.stop_reason === "refusal") throw new Error("O modelo recusou esta solicitação.");
   if (fin.stop_reason === "max_tokens") throw new Error("Resposta excedeu o limite de tamanho.");
   // deno-lint-ignore no-explicit-any

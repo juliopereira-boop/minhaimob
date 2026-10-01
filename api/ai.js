@@ -1,6 +1,6 @@
 // IA dos corretores virtuais na Vercel (OpenAI). Mesmo contrato da Edge Function ai-chat.
 // GET  → status (sem dados sensíveis)
-// POST → { mode: 'chat'|'agent'|'json', persona, agent_key, messages, contexto, tools, system, prompt, schema, schema_name, knowledge_for }
+// POST → { mode: 'chat'|'agent'|'json', persona, agent_key, messages, contexto, tools, system, prompt, schema, schema_name, knowledge_for, knowledge_max, tier: 'leve' }
 const L = require('./_lib');
 
 const REGRAS = `
@@ -28,13 +28,14 @@ module.exports = async (req, res) => {
   if (auth.erro) return L.enviar(res, auth.code, { error: auth.erro });
 
   const agentes = [...new Set([...(body.knowledge_for || []), ...(body.agent_key ? [body.agent_key] : [])])];
-  const conhecimento = await L.carregarConhecimento(auth.token, agentes);
+  const leve = body.tier === 'leve';
+  const conhecimento = await L.carregarConhecimento(auth.token, agentes, Math.max(0, Number(body.knowledge_max) || 150000));
   try {
     if (mode === 'json') {
       if (!body.schema || !body.prompt) return L.enviar(res, 400, { error: 'schema e prompt obrigatórios' });
-      const r = await L.jsonOut([body.system || 'Responda em português do Brasil.', conhecimento].filter(Boolean).join('\n\n'), body.prompt, body.schema, body.schema_name || 'saida');
-      await L.logUso(auth, 'json', r.usage);
-      return L.enviar(res, 200, { ok: true, data: r.data });
+      const r = await L.jsonOut([body.system || 'Responda em português do Brasil.', conhecimento].filter(Boolean).join('\n\n'), body.prompt, body.schema, body.schema_name || 'saida', leve ? { model: L.MODEL_LEVE, max: 900 } : {});
+      await L.logUso(auth, leve ? 'sociedade' : 'json', r.usage, leve ? L.MODEL_LEVE : L.MODEL);
+      return L.enviar(res, 200, { ok: true, data: r.data, usage: r.usage });
     }
     const hist = (body.messages || []).filter((m) => ['user', 'assistant'].includes(m.role) && typeof m.content === 'string' && m.content.trim()).slice(-30);
     if (!hist.length || hist[hist.length - 1].role !== 'user') return L.enviar(res, 400, { error: 'última mensagem deve ser do usuário' });

@@ -22,7 +22,7 @@ export async function logUso(sb: SupabaseClient, orgId: string | null, userId: s
 const MAX_CONHECIMENTO = 150_000; // caracteres injetados por requisição
 
 /** Base de conhecimento dos agentes (agente específico + itens gerais). Mais recentes primeiro. */
-export async function carregarConhecimento(sb: SupabaseClient, agentes: string[]): Promise<string> {
+export async function carregarConhecimento(sb: SupabaseClient, agentes: string[], max = MAX_CONHECIMENTO): Promise<string> {
   if (!agentes.length) return "";
   const { data } = await sb.from("ai_conhecimento").select("agente,titulo,conteudo,tipo")
     .eq("ativo", true).or(`agente.is.null,agente.in.(${agentes.map((a) => `"${a.replace(/"/g, "")}"`).join(",")})`)
@@ -31,7 +31,7 @@ export async function carregarConhecimento(sb: SupabaseClient, agentes: string[]
   const partes: string[] = [];
   for (const k of data ?? []) {
     const bloco = `### ${k.titulo}${k.agente ? ` (para ${k.agente})` : " (para todo o time)"}${k.tipo === "regra" ? " [REGRA OBRIGATÓRIA]" : ""}\n${k.conteudo}`;
-    if (total + bloco.length > MAX_CONHECIMENTO) break;
+    if (total + bloco.length > Math.min(max, MAX_CONHECIMENTO)) break;
     partes.push(bloco); total += bloco.length;
   }
   return partes.length ? `<base_de_conhecimento>\nO gestor ensinou o seguinte ao time. Use como verdade da empresa e siga as regras marcadas como obrigatórias:\n\n${partes.join("\n\n")}\n</base_de_conhecimento>` : "";

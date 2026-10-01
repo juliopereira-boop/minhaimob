@@ -187,6 +187,7 @@ export function falaOffline({ agente, conversa, mensagens, estado, kpi, historic
       if (souIniciador) {
         const obj = /objec|preco|caro/.test(tag) ? OBJECOES[seed % OBJECOES.length] : null;
         if (obj && minhas % 2) return r(`Quando o cliente disser "${obj.objecao}", responda assim: ${obj.resposta}`, 'ensinar', 0.5);
+        if (c.insights?.length && minhas === 1) return r(`Olhei nosso CRM agora: ${c.insights.slice(0, 2).join(' ')}`, 'ensinar', 0.4);
         return r(minhas >= 3 ? `Exercício para hoje: ${dica.exercicio}` : `${dica.titulo}. ${dica.corpo}`, 'ensinar', 0.5);
       }
       return minhas === 0 ? r(meuProblema ? `O mais difícil: ${meuProblema.texto}. Não sei por onde começar.` : 'Sinto que perco tempo com quem não vai comprar.', 'desabafar', 0, { pensamento: 'Melhor ser honesto(a) sobre a dificuldade.' })

@@ -2,7 +2,7 @@
 // mode: "chat" (streaming SSE) | "agent" (resposta + ferramentas) | "json" (saída estruturada)
 import { corsHeaders, json } from "../_shared/cors.ts";
 import { userClient, logUso, carregarConhecimento } from "../_shared/auth.ts";
-import { PROVIDER, MODEL, configured, streamText, complete, jsonOut, type Msg, type Tool } from "../_shared/llm.ts";
+import { PROVIDER, MODEL, MODEL_LEVE, configured, streamText, complete, jsonOut, type Msg, type Tool } from "../_shared/llm.ts";
 
 const REGRAS = `
 Você trabalha no escritório virtual da MinhaImob, uma plataforma de vendas de imóveis no Brasil.
@@ -24,24 +24,26 @@ Deno.serve(async (req) => {
     mode?: "chat" | "agent" | "json" | "status"; agent_key?: string; persona?: { system_prompt: string };
     messages?: Msg[]; contexto?: unknown; tools?: Tool[]; system?: string; prompt?: string;
     schema?: Record<string, unknown>; schema_name?: string; knowledge_for?: string[]; conversation_id?: string;
+    knowledge_max?: number; tier?: "leve" | "forte";
   };
   try { body = await req.json(); } catch { return json({ error: "JSON inválido" }, 400); }
   const mode = body.mode ?? "chat";
-  if (mode === "status") return json({ provider: PROVIDER, model: MODEL, erro: configured(), ia_permitida: ctx.iaPermitida });
+  if (mode === "status") return json({ provider: PROVIDER, model: MODEL, model_leve: MODEL_LEVE, erro: configured(), ia_permitida: ctx.iaPermitida });
   const cfgErr = configured();
   if (cfgErr) return json({ error: cfgErr }, 500);
   if (!ctx.iaPermitida) return json({ error: "O plano desta imobiliária não inclui IA." }, 403);
 
   const agentes = [...new Set([...(body.knowledge_for ?? []), ...(body.agent_key ? [body.agent_key] : [])])];
-  const conhecimento = await carregarConhecimento(ctx.sb, agentes);
+  const leve = body.tier === "leve";
+  const conhecimento = await carregarConhecimento(ctx.sb, agentes, Math.max(0, Number(body.knowledge_max) || 150_000));
 
   try {
     if (mode === "json") {
       if (!body.schema || !body.prompt) return json({ error: "schema e prompt obrigatórios" }, 400);
       const system = [body.system ?? "Responda em português do Brasil.", conhecimento].filter(Boolean).join("\n\n");
-      const r = await jsonOut(system, body.prompt, body.schema, body.schema_name ?? "saida", "low");
-      await logUso(ctx.sb, ctx.orgId, ctx.userId, "json", PROVIDER, MODEL, r.usage);
-      return json({ ok: true, data: r.data });
+      const r = await jsonOut(system, body.prompt, body.schema, body.schema_name ?? "saida", "low", undefined, leve ? { model: MODEL_LEVE, max: 900 } : {});
+      await logUso(ctx.sb, ctx.orgId, ctx.userId, leve ? "sociedade" : "json", PROVIDER, leve ? MODEL_LEVE : MODEL, r.usage);
+      return json({ ok: true, data: r.data, usage: r.usage });
     }
 
     const hist = (body.messages ?? []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim()).slice(-30);

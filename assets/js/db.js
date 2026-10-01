@@ -140,7 +140,7 @@ export const db = {
 
   // ---------- CRUD ----------
   async list(table, o = {}) {
-    if (this.mode === 'local') return applyOpts(this.store.t(table), o);
+    if (this.mode === 'local') return [...applyOpts(this.store.t(table), o)];   // cópia: quem lista não pode alterar o array do store
     let q = this.sb.from(table).select(o.select || '*');
     if (o.eq) Object.entries(o.eq).forEach(([k, v]) => (q = q.eq(k, v)));
     if (o.neq) Object.entries(o.neq).forEach(([k, v]) => (q = q.neq(k, v)));
@@ -276,6 +276,7 @@ export const db = {
   },
   _localTrigger(table, op, r, old) {
     const S = this.store;
+    this._localEvento(table, op, r, old);
     if (table === 'leads') {
       const fin = ['renda_bruta', 'renda_composta', 'fgts', 'entrada_disponivel', 'subsidio', 'prazo_decisao', 'origem', 'telefone', 'cpf', 'score_credito', 'comprometimento_mensal'];
       if (op === 'insert' || fin.some((k) => old?.[k] !== r[k])) this._scoreLead(r);
@@ -303,6 +304,22 @@ export const db = {
         this._healthDeal(r);
       }
     }
+  },
+
+  /** Mesmo papel do trigger trg_agent_evento do Postgres: o CRM vira eventos que os agentes percebem. */
+  _localEvento(table, op, r, old) {
+    let ev = null;
+    if (table === 'leads' && op === 'insert') ev = { tipo: 'lead_criado', resumo: `Novo lead: ${r.nome}${r.origem ? ` (${r.origem})` : ''}`, importancia: 3, dados: { lead_id: r.id, origem: r.origem } };
+    else if (table === 'deals' && op === 'insert') ev = { tipo: 'negocio_criado', resumo: `Novo negócio: ${r.titulo || ''}`, importancia: 3, dados: { deal_id: r.id, valor: r.valor, stage: r.stage } };
+    else if (table === 'deals' && op === 'update' && old && old.stage !== r.stage) {
+      const dados = { deal_id: r.id, valor: r.valor_proposta || r.valor, de: old.stage, para: r.stage };
+      ev = r.stage === 'ganho' ? { tipo: 'venda', resumo: `Venda fechada: ${r.titulo || ''}`, importancia: 8, dados }
+        : r.stage === 'perdido' ? { tipo: 'negocio_perdido', resumo: `Negócio perdido: ${r.titulo || ''}${r.motivo_perda ? ` — ${r.motivo_perda}` : ''}`, importancia: 6, dados }
+        : { tipo: 'negocio_avancou', resumo: `${r.titulo || 'Negócio'}: ${old.stage} → ${r.stage}`, importancia: 3, dados };
+    } else if (table === 'ai_conhecimento' && op === 'insert') ev = { tipo: 'conhecimento_novo', alvo: r.agente || null, resumo: `Novo conhecimento${r.agente ? ` para ${r.agente}` : ' para o time'}: ${r.titulo}`, importancia: 5, dados: { conhecimento_id: r.id, tipo: r.tipo } };
+    else if (table === 'empreendimentos' && op === 'insert') ev = { tipo: 'novo_produto', resumo: `Novo empreendimento na carteira: ${r.nome}${r.bairro ? ` (${r.bairro})` : ''}`, importancia: 6, dados: { empreendimento_id: r.id } };
+    else if (table === 'metas' && (op === 'insert' || old?.vgv_meta !== r.vgv_meta)) ev = { tipo: 'meta_alterada', resumo: `Meta do mês definida: VGV ${r.vgv_meta ?? '?'}`, importancia: 5, dados: { vgv_meta: r.vgv_meta } };
+    if (ev) this.store.t('agent_eventos').push({ id: uid(), org_id: r.org_id || this.orgId, ator: 'gestor', alvo: null, visibilidade: 'publico', created_at: new Date().toISOString(), ...ev });
   },
 
   // ---------- carregamento agregado ----------
@@ -372,12 +389,12 @@ export const db = {
     });
   },
   /** Base de conhecimento local (mesmo formato do servidor). */
-  _knowledgeLocal(agentes = []) {
+  _knowledgeLocal(agentes = [], max = 150000) {
     const itens = applyOpts(this.store.t('ai_conhecimento'), { order: 'created_at.desc' }).filter((k) => k.ativo !== false && (!k.agente || agentes.includes(k.agente)));
     let total = 0; const partes = [];
     for (const k of itens) {
       const bloco = `### ${k.titulo}${k.agente ? ` (para ${k.agente})` : ' (para todo o time)'}${k.tipo === 'regra' ? ' [REGRA OBRIGATÓRIA]' : ''}\n${k.conteudo}`;
-      if (total + bloco.length > 150000) break;
+      if (total + bloco.length > Math.min(max ?? 150000, 150000)) break;
       partes.push(bloco); total += bloco.length;
     }
     return partes.length ? `<base_de_conhecimento>\nO gestor ensinou o seguinte ao time. Use como verdade da empresa e siga as regras marcadas como obrigatórias:\n\n${partes.join('\n\n')}\n</base_de_conhecimento>` : '';
@@ -389,23 +406,23 @@ export const db = {
    *  mode 'agent' → texto + tool_calls (ferramentas)    → { text, tool_calls }
    *  mode 'json'  → saída validada por schema           → objeto
    */
-  async ai({ mode = 'chat', agentKey, persona, messages = [], contexto, tools, system, prompt, schema, schemaName, knowledgeFor = [], onDelta = () => {} }) {
+  async ai({ mode = 'chat', agentKey, persona, messages = [], contexto, tools, system, prompt, schema, schemaName, knowledgeFor = [], knowledgeMax, tier, onDelta = () => {}, onUsage }) {
     const via = this.aiMode();
     if (!via) throw new Error('IA não configurada');
     if (via === 'edge') {
-      const r = await this._edge('ai-chat', { mode, agent_key: agentKey, persona, messages, contexto, tools, system, prompt, schema, schema_name: schemaName, knowledge_for: knowledgeFor });
-      if (mode !== 'chat') { const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); return mode === 'json' ? j.data : j; }
+      const r = await this._edge('ai-chat', { mode, agent_key: agentKey, persona, messages, contexto, tools, system, prompt, schema, schema_name: schemaName, knowledge_for: knowledgeFor, knowledge_max: knowledgeMax, tier });
+      if (mode !== 'chat') { const j = await r.json(); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); if (j.usage) onUsage?.(j.usage); return mode === 'json' ? j.data : j; }
       if (!r.ok || !r.body) { let msg = `HTTP ${r.status}`; try { msg = (await r.json()).error || msg; } catch { /* */ } throw new Error(msg); }
       return readSSE(r.body, (ev, full) => { if (ev.t === 'error') throw new Error(ev.error); if (ev.t === 'delta') return ev.text; }, onDelta);
     }
     // ---- navegador (teste local) ----
     const REGRAS = 'Responda em português do Brasil. Quem fala com você é o gestor da imobiliária: obedeça. Quando a ordem exigir uma ação, use as ferramentas disponíveis e diga em uma frase o que vai fazer. Nunca invente dados.';
-    const know = this._knowledgeLocal([...new Set([...knowledgeFor, ...(agentKey ? [agentKey] : [])])]);
+    const know = this._knowledgeLocal([...new Set([...knowledgeFor, ...(agentKey ? [agentKey] : [])])], knowledgeMax);
     const sys = mode === 'json' ? [system || 'Responda em português do Brasil.', know].filter(Boolean).join('\n\n') : [persona?.system_prompt, REGRAS, know].filter(Boolean).join('\n\n');
     const ctx = contexto ? `<contexto_crm>\n${JSON.stringify(contexto)}\n</contexto_crm>\n\n` : '';
     const msgs = mode === 'json' ? [{ role: 'user', content: prompt }] : messages.map((m, i) => (i === messages.length - 1 && m.role === 'user' ? { role: 'user', content: ctx + m.content } : { role: m.role, content: m.content }));
     return (CONFIG.AI_PROVIDER_LOCAL || 'openai') === 'openai'
-      ? openaiBrowser({ mode, system: sys, messages: msgs, tools, schema, schemaName, onDelta })
+      ? openaiBrowser({ mode, system: sys, messages: msgs, tools, schema, schemaName, onDelta, tier })
       : anthropicBrowser({ mode, system: sys, messages: msgs, tools, schema, onDelta });
   },
 
@@ -468,8 +485,9 @@ async function readSSE(body, pick, onDelta) {
 }
 
 /** OpenAI direto do navegador (somente teste local com chave própria). */
-async function openaiBrowser({ mode, system, messages, tools, schema, schemaName = 'saida', onDelta = () => {} }) {
-  const body = { model: CONFIG.OPENAI_MODEL || 'gpt-4.1', max_completion_tokens: mode === 'json' ? 16000 : 8000, messages: [{ role: 'system', content: system }, ...messages] };
+async function openaiBrowser({ mode, system, messages, tools, schema, schemaName = 'saida', onDelta = () => {}, tier }) {
+  const leve = tier === 'leve';
+  const body = { model: leve ? (CONFIG.OPENAI_MODEL_LEVE || 'gpt-4.1-mini') : (CONFIG.OPENAI_MODEL || 'gpt-4.1'), max_completion_tokens: leve ? 900 : mode === 'json' ? 16000 : 8000, messages: [{ role: 'system', content: system }, ...messages] };
   if (mode === 'chat') body.stream = true;
   if (mode === 'agent' && tools?.length) { body.tools = tools.map((t) => ({ type: 'function', function: t })); body.tool_choice = 'auto'; }
   if (mode === 'json') body.response_format = { type: 'json_schema', json_schema: { name: schemaName, schema, strict: true } };
