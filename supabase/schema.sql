@@ -694,6 +694,168 @@ create table if not exists public.ai_uso (
 create index if not exists idx_ai_uso_org on public.ai_uso(org_id, created_at desc);
 
 -- ============================================================================
+-- 12c. SOCIEDADE DE AGENTES — estado, memória, relações, eventos, conversas
+--      (cada agente percebe eventos, lembra, decide e conversa por conta própria)
+-- ============================================================================
+create table if not exists public.agent_mundo (
+  id                   uuid primary key default gen_random_uuid(),
+  org_id               uuid not null unique references public.orgs(id) on delete cascade,
+  pausado              boolean not null default false,
+  sempre_ativo         boolean not null default true,     -- false = respeita horário comercial
+  orcamento_tokens_dia int not null default 150000,        -- teto diário de IA da sociedade
+  tokens_hoje          int not null default 0,
+  dia                  date not null default current_date,
+  tick_lock_ate        timestamptz,
+  ultimo_tick          timestamptz,
+  config               jsonb not null default '{}'::jsonb,
+  updated_at           timestamptz not null default now()
+);
+
+create table if not exists public.agent_estado (
+  id                    uuid primary key default gen_random_uuid(),
+  org_id                uuid not null references public.orgs(id) on delete cascade,
+  agente                text not null,
+  personalidade         jsonb not null default '{}'::jsonb,  -- traços 0..1 (estáveis)
+  humor                 jsonb not null default '{}'::jsonb,  -- motivação, energia, estresse... (dinâmicos)
+  atividade             text,
+  local                 text not null default 'mesa',
+  ocupado_ate           timestamptz,
+  estrategia            text,
+  estrategia_desde      timestamptz,
+  estrategia_base       jsonb,                                -- KPI no início da estratégia
+  kpi                   jsonb not null default '{}'::jsonb,
+  desempenho            numeric(5,2),
+  ranking               int,
+  cursor_evento         timestamptz,
+  ultima_iniciativa     timestamptz,
+  ultima_reflexao       timestamptz,
+  importancia_acumulada numeric(8,2) not null default 0,
+  tokens_dia            int not null default 0,
+  dia                   date not null default current_date,
+  updated_at            timestamptz not null default now(),
+  unique (org_id, agente)
+);
+
+create table if not exists public.agent_relacoes (
+  id               uuid primary key default gen_random_uuid(),
+  org_id           uuid not null references public.orgs(id) on delete cascade,
+  agente           text not null,          -- quem sente
+  outro            text not null,          -- sobre quem
+  afinidade        numeric(4,3) not null default 0.1,   -- -1..1
+  confianca        numeric(4,3) not null default 0.3,   --  0..1
+  respeito         numeric(4,3) not null default 0.4,   --  0..1
+  rivalidade       numeric(4,3) not null default 0,     --  0..1
+  interacoes       int not null default 0,
+  positivas        int not null default 0,
+  negativas        int not null default 0,
+  ultima_interacao timestamptz,
+  updated_at       timestamptz not null default now(),
+  unique (org_id, agente, outro)
+);
+
+create table if not exists public.agent_memorias (
+  id            uuid primary key default gen_random_uuid(),
+  org_id        uuid not null references public.orgs(id) on delete cascade,
+  agente        text not null,
+  tipo          text not null check (tipo in ('episodica','semantica','social','operacional','reflexao','estrategia')),
+  conteudo      text not null,
+  importancia   numeric(4,2) not null default 3,     -- 1..10
+  sobre         text,                                -- outro agente, lead, tema
+  tags          text[] not null default '{}',
+  evento_id     uuid,
+  conversa_id   uuid,
+  acessos       int not null default 0,
+  ultimo_acesso timestamptz,
+  status        text not null default 'ativa' check (status in ('ativa','concluida','esquecida')),
+  prazo         timestamptz,
+  created_at    timestamptz not null default now()
+);
+create index if not exists idx_agmem_busca on public.agent_memorias(org_id, agente, status, created_at desc);
+
+create table if not exists public.agent_eventos (
+  id           uuid primary key default gen_random_uuid(),
+  org_id       uuid not null references public.orgs(id) on delete cascade,
+  tipo         text not null,
+  ator         text,                 -- agente, 'gestor' ou 'sistema'
+  alvo         text,
+  visibilidade text not null default 'publico' check (visibilidade in ('publico','privado')),
+  resumo       text not null,
+  dados        jsonb not null default '{}'::jsonb,
+  importancia  numeric(4,2) not null default 3,
+  created_at   timestamptz not null default now()
+);
+create index if not exists idx_agev_org on public.agent_eventos(org_id, created_at desc);
+
+create table if not exists public.agent_conversas (
+  id            uuid primary key default gen_random_uuid(),
+  org_id        uuid not null references public.orgs(id) on delete cascade,
+  tipo          text not null default 'conversa' check (tipo in ('conversa','cafe','reuniao','treinamento','mentoria','recado')),
+  participantes text[] not null,
+  iniciador     text not null,
+  tema          text,
+  motivo        text,
+  status        text not null default 'aberta' check (status in ('proposta','agendada','aberta','encerrada','recusada')),
+  agendada_para timestamptz,
+  turnos        int not null default 0,
+  max_turnos    int not null default 6,
+  resumo        text,
+  contexto      jsonb not null default '{}'::jsonb,  -- motivo estruturado, convites, quem aceitou
+  created_at    timestamptz not null default now(),
+  encerrada_em  timestamptz
+);
+alter table public.agent_conversas add column if not exists contexto jsonb not null default '{}'::jsonb;
+create index if not exists idx_agconv_org on public.agent_conversas(org_id, created_at desc);
+
+create table if not exists public.agent_mensagens (
+  id           uuid primary key default gen_random_uuid(),
+  org_id       uuid not null references public.orgs(id) on delete cascade,
+  conversa_id  uuid not null references public.agent_conversas(id) on delete cascade,
+  de           text not null,
+  para         text[] not null default '{}',
+  texto        text not null,
+  intencao     text,
+  sentimento   numeric(3,2),
+  pensamento   text,                  -- raciocínio privado de quem falou (só o gestor vê)
+  profundidade int not null default 0,
+  lida_por     text[] not null default '{}',
+  usou_ia      boolean not null default false,
+  created_at   timestamptz not null default now()
+);
+create index if not exists idx_agmsg_conv on public.agent_mensagens(conversa_id, created_at);
+create index if not exists idx_agmsg_org on public.agent_mensagens(org_id, created_at desc);
+
+create table if not exists public.agent_objetivos (
+  id          uuid primary key default gen_random_uuid(),
+  org_id      uuid not null references public.orgs(id) on delete cascade,
+  agente      text not null,
+  descricao   text not null,
+  kpi         text,
+  alvo        numeric,
+  base        numeric,
+  atual       numeric,
+  prioridade  int not null default 2,
+  status      text not null default 'ativo' check (status in ('ativo','concluido','abandonado')),
+  plano       jsonb not null default '[]'::jsonb,
+  avaliado_em timestamptz,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+create index if not exists idx_agobj on public.agent_objetivos(org_id, agente, status);
+
+create table if not exists public.agent_acoes (
+  id         uuid primary key default gen_random_uuid(),
+  org_id     uuid not null references public.orgs(id) on delete cascade,
+  agente     text not null,
+  tipo       text not null,
+  motivo     text,
+  dados      jsonb not null default '{}'::jsonb,
+  usou_ia    boolean not null default false,
+  tokens     int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_agacao on public.agent_acoes(org_id, created_at desc);
+
+-- ============================================================================
 -- 13. FUNÇÕES UTILITÁRIAS
 -- ============================================================================
 create or replace function public.fn_touch_updated_at()
@@ -706,7 +868,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['orgs','profiles','empreendimentos','tipologias','unidades','books','leads','deals','ai_conversations','ai_conhecimento']
+  foreach t in array array['orgs','profiles','empreendimentos','tipologias','unidades','books','leads','deals','ai_conversations','ai_conhecimento','agent_mundo','agent_estado','agent_relacoes','agent_objetivos']
   loop
     execute format('drop trigger if exists trg_touch_%1$s on public.%1$s', t);
     execute format('create trigger trg_touch_%1$s before update on public.%1$s for each row execute function public.fn_touch_updated_at()', t);
@@ -1487,7 +1649,9 @@ declare
   t text;
   tenant_tables text[] := array['empreendimentos','tipologias','unidades','books','leads','deals','deal_stage_history',
     'activities','matches','simulacoes','ai_agents','ai_conversations','ai_messages','scripts','objecoes',
-    'treinamentos','comparaveis','metas','notificacoes','ai_conhecimento','ai_interacoes'];
+    'treinamentos','comparaveis','metas','notificacoes','ai_conhecimento','ai_interacoes',
+    'agent_mundo','agent_estado','agent_relacoes','agent_memorias','agent_eventos','agent_conversas',
+    'agent_mensagens','agent_objetivos','agent_acoes'];
   manager_delete text[] := array['empreendimentos','tipologias','unidades','ai_agents','metas','ai_conhecimento'];
 begin
   foreach t in array tenant_tables loop
@@ -1811,5 +1975,116 @@ grant execute on function public.fn_admin_add_superadmin(text) to authenticated;
 grant execute on function public.fn_admin_remove_superadmin(uuid) to authenticated;
 grant execute on function public.fn_admin_excluir_cliente(uuid, text) to authenticated;
 revoke execute on function public._fn_exigir_superadmin() from public, anon, authenticated;
+
+-- ============================================================================
+-- 28. SOCIEDADE DE AGENTES — percepção do mundo, trava do ciclo, manutenção
+-- ============================================================================
+-- Acontecimentos do CRM viram eventos que os agentes percebem
+create or replace function public.trg_agent_evento()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_tipo text; v_resumo text; v_imp numeric := 3; v_dados jsonb := '{}'::jsonb; v_alvo text;
+begin
+  if tg_table_name = 'leads' and tg_op = 'INSERT' then
+    v_tipo := 'lead_criado'; v_resumo := 'Novo lead: ' || new.nome || coalesce(' (' || new.origem || ')', '');
+    v_imp := 3; v_dados := jsonb_build_object('lead_id', new.id, 'origem', new.origem);
+  elsif tg_table_name = 'deals' and tg_op = 'INSERT' then
+    v_tipo := 'negocio_criado'; v_resumo := 'Novo negócio: ' || coalesce(new.titulo, '');
+    v_imp := 3; v_dados := jsonb_build_object('deal_id', new.id, 'valor', new.valor, 'stage', new.stage);
+  elsif tg_table_name = 'deals' and tg_op = 'UPDATE' then
+    if new.stage is not distinct from old.stage then return new; end if;
+    v_dados := jsonb_build_object('deal_id', new.id, 'valor', coalesce(new.valor_proposta, new.valor), 'de', old.stage, 'para', new.stage);
+    if new.stage = 'ganho' then v_tipo := 'venda'; v_imp := 8; v_resumo := 'Venda fechada: ' || coalesce(new.titulo, '');
+    elsif new.stage = 'perdido' then v_tipo := 'negocio_perdido'; v_imp := 6; v_resumo := 'Negócio perdido: ' || coalesce(new.titulo, '') || coalesce(' — ' || new.motivo_perda, '');
+    else v_tipo := 'negocio_avancou'; v_imp := 3; v_resumo := coalesce(new.titulo, 'Negócio') || ': ' || old.stage || ' → ' || new.stage;
+    end if;
+  elsif tg_table_name = 'ai_conhecimento' and tg_op = 'INSERT' then
+    v_tipo := 'conhecimento_novo'; v_imp := 5; v_alvo := new.agente;
+    v_resumo := 'Novo conhecimento' || coalesce(' para ' || new.agente, ' para o time') || ': ' || new.titulo;
+    v_dados := jsonb_build_object('conhecimento_id', new.id, 'tipo', new.tipo);
+  elsif tg_table_name = 'empreendimentos' and tg_op = 'INSERT' then
+    v_tipo := 'novo_produto'; v_imp := 6; v_resumo := 'Novo empreendimento na carteira: ' || new.nome || coalesce(' (' || new.bairro || ')', '');
+    v_dados := jsonb_build_object('empreendimento_id', new.id);
+  elsif tg_table_name = 'metas' then
+    v_tipo := 'meta_alterada'; v_imp := 5; v_resumo := 'Meta do mês definida: VGV ' || coalesce(new.vgv_meta::text, '?');
+    v_dados := jsonb_build_object('vgv_meta', new.vgv_meta);
+  else
+    return new;
+  end if;
+  insert into public.agent_eventos (org_id, tipo, ator, alvo, resumo, dados, importancia)
+    values (new.org_id, v_tipo, case when auth.uid() is null then 'sistema' else 'gestor' end, v_alvo, v_resumo, v_dados, v_imp);
+  return new;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['leads','deals','ai_conhecimento','empreendimentos','metas'] loop
+    execute format('drop trigger if exists trg_agent_evento_%1$s on public.%1$s', t);
+  end loop;
+  create trigger trg_agent_evento_leads after insert on public.leads for each row execute function public.trg_agent_evento();
+  create trigger trg_agent_evento_deals after insert or update of stage on public.deals for each row execute function public.trg_agent_evento();
+  create trigger trg_agent_evento_ai_conhecimento after insert on public.ai_conhecimento for each row execute function public.trg_agent_evento();
+  create trigger trg_agent_evento_empreendimentos after insert on public.empreendimentos for each row execute function public.trg_agent_evento();
+  create trigger trg_agent_evento_metas after insert or update of vgv_meta on public.metas for each row execute function public.trg_agent_evento();
+end $$;
+
+-- Trava atômica: só um navegador/servidor roda o ciclo da sociedade por vez
+create or replace function public.fn_sociedade_lock(p_org uuid, p_segundos int default 25)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare v_ok uuid;
+begin
+  if auth.uid() is not null and p_org not in (select public.fn_my_orgs()) then return false; end if;
+  insert into public.agent_mundo (org_id) values (p_org) on conflict (org_id) do nothing;
+  update public.agent_mundo set
+      tick_lock_ate = now() + make_interval(secs => least(greatest(p_segundos, 5), 120)),
+      ultimo_tick = now(),
+      tokens_hoje = case when dia <> current_date then 0 else tokens_hoje end,
+      dia = current_date
+    where org_id = p_org and (tick_lock_ate is null or tick_lock_ate < now())
+    returning id into v_ok;
+  return v_ok is not null;
+end $$;
+
+-- Consome orçamento de IA da sociedade (retorna false se estourou o teto do dia)
+create or replace function public.fn_sociedade_gastar(p_org uuid, p_tokens int)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare v_ok uuid;
+begin
+  if auth.uid() is not null and p_org not in (select public.fn_my_orgs()) then return false; end if;
+  update public.agent_mundo set
+      tokens_hoje = (case when dia <> current_date then 0 else tokens_hoje end) + greatest(p_tokens, 0),
+      dia = current_date
+    where org_id = p_org and (case when dia <> current_date then 0 else tokens_hoje end) + greatest(p_tokens, 0) <= orcamento_tokens_dia
+    returning id into v_ok;
+  return v_ok is not null;
+end $$;
+
+-- Manutenção: esquece memórias banais antigas e limpa eventos velhos (não apaga memórias importantes)
+create or replace function public.fn_sociedade_manutencao(p_org uuid)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare n_m int; n_e int;
+begin
+  if auth.uid() is not null and p_org not in (select public.fn_my_orgs()) then raise exception 'sem acesso'; end if;
+  update public.agent_memorias set status = 'esquecida'
+    where org_id = p_org and status = 'ativa' and tipo = 'episodica'
+      and importancia < 4 and coalesce(ultimo_acesso, created_at) < now() - interval '14 days';
+  get diagnostics n_m = row_count;
+  delete from public.agent_eventos where org_id = p_org and created_at < now() - interval '45 days';
+  get diagnostics n_e = row_count;
+  return jsonb_build_object('memorias_esquecidas', n_m, 'eventos_removidos', n_e);
+end $$;
+
+grant execute on function public.fn_sociedade_lock(uuid, int) to authenticated;
+grant execute on function public.fn_sociedade_gastar(uuid, int) to authenticated;
+grant execute on function public.fn_sociedade_manutencao(uuid) to authenticated;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['agent_mensagens','agent_conversas','agent_estado','agent_eventos'] loop
+    begin execute format('alter publication supabase_realtime add table public.%I', t);
+    exception when duplicate_object then null; when undefined_object then null; end;
+  end loop;
+end $$;
 
 -- FIM
