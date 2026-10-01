@@ -350,7 +350,21 @@ export const db = {
     return (prov === 'openai' ? CONFIG.OPENAI_KEY_LOCAL : CONFIG.ANTHROPIC_KEY_LOCAL) ? 'browser' : null;
   },
   async _token() { const { data } = await this.sb.auth.getSession(); return data.session?.access_token; },
+  /** Onde a IA roda: função da Vercel (se OPENAI_API_KEY estiver lá) ou Edge Function do Supabase. */
+  async _viaIA() {
+    if (this._via) return this._via;
+    try {
+      const r = await fetch('/api/ai', { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); if (j.configured) return (this._via = 'vercel'); }
+    } catch { /* sem /api local */ }
+    return (this._via = 'edge');
+  },
   async _edge(fn, body) {
+    if ((await this._viaIA()) === 'vercel') {
+      return fetch(fn === 'parse-book' ? '/api/parse-book' : '/api/ai', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await this._token()}` }, body: JSON.stringify(body),
+      });
+    }
     return fetch(`${CONFIG.SUPABASE_URL}/functions/v1/${fn}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await this._token()}`, apikey: CONFIG.SUPABASE_ANON_KEY },
@@ -400,8 +414,12 @@ export const db = {
 
   async aiStatus() {
     if (this.mode !== 'supabase') return { provider: CONFIG.AI_PROVIDER_LOCAL, model: CONFIG.AI_PROVIDER_LOCAL === 'anthropic' ? CONFIG.ANTHROPIC_MODEL : CONFIG.OPENAI_MODEL, local: true };
-    const r = await this._edge('ai-chat', { mode: 'status' });
-    return r.json();
+    if ((await this._viaIA()) === 'vercel') { const r = await fetch('/api/ai', { cache: 'no-store' }); return r.json(); }
+    try {
+      const r = await this._edge('ai-chat', { mode: 'status' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return { ...(await r.json()), via: 'supabase' };
+    } catch { const v = await fetch('/api/ai', { cache: 'no-store' }).then((x) => (x.ok ? x.json() : null)).catch(() => null); return v || { erro: 'IA não configurada: adicione OPENAI_API_KEY nas variáveis de ambiente da Vercel.' }; }
   },
 
   /** Extração de book com IA. */

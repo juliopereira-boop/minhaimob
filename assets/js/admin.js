@@ -244,19 +244,23 @@ async function tabIA(el) {
   el.innerHTML = `<div class="grid g2">
     <div class="card"><h3>Status da IA</h3>
       <div class="row mt-s"><span class="badge ${ok ? 'b-green' : 'b-red'}">${ok ? '● funcionando' : '✕ não configurada'}</span></div>
-      <dl class="kv mt"><dt>Provedor</dt><dd>${esc(st?.provider || '—')}</dd><dt>Modelo</dt><dd>${esc(st?.model || '—')}</dd>${st?.erro ? `<dt>Problema</dt><dd style="color:var(--red)">${esc(st.erro)}</dd>` : ''}</dl>
+      <dl class="kv mt"><dt>Provedor</dt><dd>${esc(st?.provider || '—')}${st?.via ? ` (${esc(st.via)})` : ''}</dd><dt>Modelo</dt><dd>${esc(st?.model || '—')}</dd>${st?.erro ? `<dt>Problema</dt><dd style="color:var(--red)">${esc(st.erro)}</dd>` : ''}</dl>
       <button class="btn sm mt" id="t-ia">Testar resposta</button><div id="t-r" class="mt-s"></div>
       <div class="hint mt">As chaves ficam só nos <i>secrets</i> do Supabase. Nunca aparecem para clientes nem no navegador.</div></div>
-    <div class="card"><h3>Configurar provedor</h3><p class="muted mt-s" style="font-size:12.5px">No terminal, dentro da pasta do projeto:</p>
+    <div class="card"><h3>Ativar a IA (sem terminal)</h3>
+      <ol style="margin:10px 0 0;padding-left:20px;line-height:1.9;font-size:13.5px">
+        <li>Crie uma chave em <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a> e confira se há créditos em <i>Billing</i>.</li>
+        <li>Na <b>Vercel</b>, abra o projeto → <b>Settings</b> → <b>Environment Variables</b>.</li>
+        <li>Adicione <code>OPENAI_API_KEY</code> com a chave (começa com <code>sk-</code>), marcando Production. Opcional: <code>OPENAI_MODEL</code> (padrão <code>gpt-4.1</code>).</li>
+        <li>Vá em <b>Deployments</b> → no último deploy, <b>⋯</b> → <b>Redeploy</b>.</li>
+        <li>Volte aqui e clique em <b>Testar resposta</b>.</li>
+      </ol>
+      <div class="hint mt">A chave fica só no servidor da Vercel e nunca aparece para clientes. Quem tem IA é definido pelo plano (aba Planos).</div>
+      <details class="mt"><summary class="muted" style="cursor:pointer;font-weight:700">Avançado: usar Edge Functions do Supabase / Claude</summary>
       <div class="code mt-s">supabase functions deploy ai-chat
 supabase functions deploy parse-book
-
-# OpenAI
-supabase secrets set AI_PROVIDER=openai OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1
-
-# ou Claude (Anthropic)
-supabase secrets set AI_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... ANTHROPIC_MODEL=claude-opus-5-5</div>
-      <p class="muted mt" style="font-size:12.5px">Trocar de provedor = mudar <code>AI_PROVIDER</code>; não precisa publicar de novo. O consumo de cada cliente aparece na coluna “IA 30d” da aba Clientes, e o plano define quem tem IA.</p></div></div>`;
+supabase secrets set AI_PROVIDER=openai OPENAI_API_KEY=sk-...
+# ou: AI_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-...</div></details></div></div>`;
   $('#t-ia', el).onclick = async () => {
     const r = $('#t-r', el); r.innerHTML = '<span class="muted">Testando…</span>';
     try { const t = await db.ai({ mode: 'chat', persona: { system_prompt: 'Responda apenas: OK, IA funcionando.' }, messages: [{ role: 'user', content: 'teste' }] }); r.innerHTML = `<div class="callout green">${esc(t.slice(0, 100))}</div>`; }

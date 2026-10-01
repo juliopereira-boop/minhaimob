@@ -47,24 +47,15 @@ Sem IA configurada, tudo funciona com os motores determinísticos da plataforma,
 
 > Alternativa sem variáveis de ambiente: preencha `assets/js/config.js` ou cole URL e chave em **Configurações** dentro do app.
 
-### 3. IA (OpenAI ou Claude) — opcional
-```bash
-npm i -g supabase
-supabase login
-supabase link --project-ref SEU_REF
-supabase functions deploy ai-chat
-supabase functions deploy parse-book
+### 3. IA (OpenAI) — sem terminal
+1. Crie a chave em [platform.openai.com/api-keys](https://platform.openai.com/api-keys) e confira se há créditos em *Billing*.
+2. Na Vercel, vá em **Settings → Environment Variables** e adicione `OPENAI_API_KEY` (opcional: `OPENAI_MODEL`, padrão `gpt-4.1`).
+3. Em **Deployments**, no último deploy, clique em **⋯ → Redeploy**.
+4. Teste em **Console → Integrações (IA) → Testar resposta**.
 
-# OpenAI
-supabase secrets set AI_PROVIDER=openai OPENAI_API_KEY=sk-... OPENAI_MODEL=gpt-4.1
-# ou Claude
-supabase secrets set AI_PROVIDER=anthropic ANTHROPIC_API_KEY=sk-ant-... ANTHROPIC_MODEL=claude-opus-5-5
-```
-- As chaves ficam só no servidor e nunca aparecem para os clientes.
-- Para trocar de provedor, basta mudar `AI_PROVIDER`.
-- O plano de cada cliente define se ele tem IA (`planos.ia_habilitada`), e o consumo fica registrado em `ai_uso`.
-- O status e o teste ficam em **Console → Integrações (IA)**.
-- No book com OpenAI, o texto é extraído no navegador. O Claude lê o PDF original (até 30 MB).
+A IA roda em `api/ai.js` e `api/parse-book.js`, funções da própria Vercel. A chave fica só no servidor. O plano de cada cliente define se ele tem IA, e o consumo fica em `ai_uso`.
+
+**Avançado (Edge Functions do Supabase, OpenAI ou Claude):** `supabase functions deploy ai-chat`, depois `supabase functions deploy parse-book`, e `supabase secrets set AI_PROVIDER=openai|anthropic ...`. O app usa a Vercel quando `OPENAI_API_KEY` está configurada lá; senão, tenta as Edge Functions.
 
 ### 4. Superadmin (dono da plataforma)
 1. Crie sua conta normalmente em `/index.html`.
