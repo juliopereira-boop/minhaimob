@@ -69,7 +69,7 @@ export async function render(el, ctx, params) {
   const status = () => {
     const m = S.mundo, ia = db.aiMode();
     const st = $('#soc-st', el);
-    if (!m) { st.className = 'badge b-gray'; st.textContent = 'iniciando…'; return; }
+    if (!m) { st.className = `badge ${S.aviso ? 'b-red' : 'b-gray'}`; st.textContent = S.aviso || 'iniciando…'; return; }
     st.className = `badge ${m.pausado ? 'b-amber' : 'b-green'}`;
     st.textContent = `${m.pausado ? '⏸ pausado' : '● vivo'} · ${ia ? 'IA' : 'sem IA (modo offline)'} · ${num((m.tokens_hoje || 0) / 1000, 1)}k/${num((m.orcamento_tokens_dia || 0) / 1000, 0)}k tokens hoje`;
     $('#soc-pause', el).textContent = m.pausado ? '▶ Retomar' : '⏸ Pausar';
@@ -170,6 +170,8 @@ export async function render(el, ctx, params) {
       (S.msgs[conversa.id] ||= []).push(mensagem);
     } else agendar();
   };
+  const onCiclo = (ev) => { const r = ev.detail || {}; S.aviso = r.pulou && /schema|falha/.test(r.pulou) ? r.pulou : r.erro || null; status(); };
+  socBus.addEventListener('soc:ciclo', onCiclo); off.push(() => socBus.removeEventListener('soc:ciclo', onCiclo));
   const tipos = ['soc:conversa', 'soc:estado', 'soc:acao', 'soc:evento', 'soc:remoto', 'soc:ciclo'];
   socBus.addEventListener('soc:mensagem', onMsg);
   tipos.forEach((t) => socBus.addEventListener(t, agendar));

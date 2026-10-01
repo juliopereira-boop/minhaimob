@@ -7,6 +7,7 @@
 //   SUPABASE_SERVICE_ROLE_KEY  — chave de serviço do Supabase (ignora RLS; este arquivo filtra por org_id)
 //   SUPABASE_URL, OPENAI_API_KEY, OPENAI_MODEL_LEVE (opcional)
 const L = require('./_lib');
+const crypto = require('node:crypto');
 
 const SB = (process.env.SUPABASE_URL || '').replace(/\/$/, '');
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -76,7 +77,8 @@ function horarioComercialBR(d = new Date()) {
 
 module.exports = async (req, res) => {
   const tok = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  if (!SECRET || tok !== SECRET) return L.enviar(res, 401, { error: 'não autorizado' });
+  const ok = SECRET && tok.length === SECRET.length && crypto.timingSafeEqual(Buffer.from(tok), Buffer.from(SECRET));
+  if (!ok) return L.enviar(res, 401, { error: 'não autorizado' });
   if (!SB || !SERVICE) return L.enviar(res, 503, { error: 'Configure SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY na Vercel para o ciclo no servidor.' });
   const inicio = Date.now();
   const { Sociedade } = await import('../assets/js/sociedade/motor.js');

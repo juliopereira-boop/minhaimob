@@ -33,7 +33,12 @@ function api(ctx) {
     insert: (t, r) => db.insert(t, r),
     update: (t, id, p) => db.update(t, id, p),
     async lock() {
-      if (!local) return db.rpc('fn_sociedade_lock', { p_org: db.orgId, p_segundos: 25 }).catch((e) => { console.warn('[sociedade] rode o schema.sql atualizado (fn_sociedade_lock)', e.message); return false; });
+      if (!local) {
+        return db.rpc('fn_sociedade_lock', { p_org: db.orgId, p_segundos: 25 }).catch((e) => {
+          const semSchema = /fn_sociedade_lock|function|404|PGRST202/i.test(`${e.code || ''} ${e.message || ''}`);
+          return semSchema ? 'rode o supabase/schema.sql atualizado no SQL Editor (funções da sociedade não encontradas)' : `falha na trava: ${e.message}`;
+        });
+      }
       try {
         const ate = Number(localStorage.getItem(LOCK_KEY) || 0);
         if (ate > Date.now()) return false;

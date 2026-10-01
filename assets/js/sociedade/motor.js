@@ -171,7 +171,8 @@ export class Sociedade {
     this._rodando = true;
     const rel = { turnos: 0, iniciativas: 0, memorias: 0, ia: 0 };
     try {
-      if (!(await this.api.lock())) return { pulou: 'outro navegador/servidor está rodando o ciclo' };
+      const trava = await this.api.lock();
+      if (trava !== true) return { pulou: typeof trava === 'string' ? trava : 'outro navegador/servidor está rodando o ciclo' };
       this._travou = true;
       await this.carregar();
       await this.inicializar();
