@@ -24,7 +24,7 @@ async function boot() {
     return;
   }
   if (!db.isSuperadmin) {
-    root.innerHTML = `<div class="card" style="max-width:640px;margin:40px auto"><h2>Acesso restrito</h2><p class="muted mt-s">Esta área é exclusiva do administrador da plataforma. Para se tornar o primeiro superadmin, rode no SQL Editor do Supabase (com o e-mail da sua conta):</p>
+    root.innerHTML = `<div class="card" style="max-width:640px;margin:40px auto"><h2>Acesso restrito</h2><p class="mt-s">Logado como <b>${esc(db.user?.email || '')}</b>.</p><p class="muted mt-s">Esta área é exclusiva do administrador da plataforma. Para se tornar o primeiro superadmin, rode no SQL Editor do Supabase (com o e-mail da sua conta):</p>
       <div class="code mt">insert into public.platform_admins (user_id)
 select id from auth.users where lower(email) = lower('${esc(db.user?.email || 'SEU_EMAIL')}')
 on conflict do nothing;</div><a class="btn primary mt" href="admin.html">Já rodei, recarregar</a></div>`;

@@ -71,7 +71,11 @@ export const db = {
       const { data } = await this.sb.auth.getSession();
       this.user = data.session?.user || null;
       if (!this.user) {
-        if (requireAuth) { location.href = 'index.html'; return false; }
+        if (requireAuth) {
+          const here = (location.pathname.split('/').pop() || 'app.html') + location.hash;
+          location.href = 'index.html?next=' + encodeURIComponent(here);
+          return false;
+        }
         return true;
       }
       const [{ data: prof }, { data: conta, error: cErr }] = await Promise.all([

@@ -59,6 +59,8 @@
     }
 
     const qs = new URLSearchParams(location.search);
+    // destino pós-login: só páginas internas (evita open redirect)
+    const NEXT = /^[\w-]+\.html(#[\w\/-]*)?$/.test(qs.get('next') || '') ? qs.get('next') : 'app.html';
     function authView(mode = qs.get('convite') ? 'signup' : 'login') {
       const t = { login: ['Entrar', 'Acesse sua imobiliária'], signup: ['Criar conta', 'Comece a vender mais hoje'], reset: ['Recuperar senha', 'Enviaremos um link para o seu e-mail'] }[mode];
       box.innerHTML = `<h2>${t[0]}</h2><p class="muted mt-s">${t[1]}</p><form id="af" class="mt">
@@ -76,10 +78,10 @@
         e.preventDefault();
         const f = e.target, btn = f.querySelector('button'); btn.disabled = true;
         try {
-          if (mode === 'login') { await db.signIn(f.email.value, f.password.value); location.href = 'app.html'; }
+          if (mode === 'login') { await db.signIn(f.email.value, f.password.value); location.href = NEXT; }
           else if (mode === 'signup') {
             const r = await db.signUp(f.email.value, f.password.value, f.nome.value);
-            if (r.session) location.href = 'app.html'; else { toast('Conta criada! Confirme pelo link enviado ao seu e-mail.', 'ok', 8000); authView('login'); }
+            if (r.session) location.href = NEXT; else { toast('Conta criada! Confirme pelo link enviado ao seu e-mail.', 'ok', 8000); authView('login'); }
           } else { await db.resetPassword(f.email.value); toast('Link enviado para o seu e-mail', 'ok'); authView('login'); }
         } catch (err) { toast(err.message === 'Invalid login credentials' ? 'E-mail ou senha inválidos' : err.message, 'err'); btn.disabled = false; }
       };
@@ -87,7 +89,11 @@
 
     if (hasSupabase()) {
       await db.init({ requireAuth: false });
-      if (db.user) location.href = 'app.html'; else authView();
+      if (db.user) location.href = NEXT;
+      else {
+        authView();
+        if (NEXT === 'admin.html') { const p = box.querySelector('p'); if (p) p.textContent = 'Entre com sua conta de superadmin para acessar o console da plataforma.'; }
+      }
     } else demoView();
   </script>
 </body>
