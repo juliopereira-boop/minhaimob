@@ -25,6 +25,7 @@ Envie o book da construtora e receba tudo destrinchado. Seis corretores de IA tr
 | **Time virtual** | Você dá ordens em linguagem natural e os corretores agem. Exemplos: *"Elisa, treine a Ana para captar leads mais quentes"* (vão para a **Sala de Treinamento**, conversam e a lição vira conhecimento permanente da Ana), *"Bruno, converse com a Carla sobre…"*, *"Fábio, faça uma reunião com…"*, *"A partir de agora…"* (vira regra obrigatória). |
 | **Ensinar o time** | Upload de PDF, TXT, CSV ou imagem (com OCR), ou texto livre, para um corretor ou para todos, como conhecimento de referência ou regra obrigatória. É injetado em toda resposta da IA, até 150 mil caracteres por corretor. |
 | **Conversas do time** | Histórico e transmissão ao vivo de treinamentos, alinhamentos e reuniões entre os agentes, no app e no escritório 3D. |
+| **Vida do escritório** | Os corretores virtuais vivem sozinhos: percebem o que acontece no CRM (lead novo, venda, perda, meta, conhecimento ensinado), guardam memórias, têm humor, objetivos ligados a KPIs reais, estratégias que trocam quando não funcionam e relações que mudam conforme as interações. Decidem por conta própria pedir ajuda, oferecer ajuda, chamar para um café, convocar reunião, treinar um colega, mandar recado para você — ou ficar em silêncio. Cada fala é uma chamada separada, do ponto de vista de quem fala. Você vê tudo em **Vida do escritório** (inclusive o pensamento privado de cada fala) e no 3D. |
 | **Dados reais** | O botão **Usar dados reais** remove todo o conteúdo fictício e mantém o que você cadastrou. A demonstração não volta. |
 
 Sem IA configurada, tudo funciona com os motores determinísticos da plataforma, inclusive ordens, treinamentos (montados com as trilhas e os dados do CRM) e a busca na base de conhecimento. A IA aprofunda a leitura de books e permite conversa livre com os agentes.
@@ -56,6 +57,20 @@ Sem IA configurada, tudo funciona com os motores determinísticos da plataforma,
 A IA roda em `api/ai.js` e `api/parse-book.js`, funções da própria Vercel. A chave fica só no servidor. O plano de cada cliente define se ele tem IA, e o consumo fica em `ai_uso`.
 
 **Avançado (Edge Functions do Supabase, OpenAI ou Claude):** `supabase functions deploy ai-chat`, depois `supabase functions deploy parse-book`, e `supabase secrets set AI_PROVIDER=openai|anthropic ...`. O app usa a Vercel quando `OPENAI_API_KEY` está configurada lá; senão, tenta as Edge Functions.
+
+### 3b. Vida do escritório (sociedade de agentes)
+Já vem ligada: roda a cada ~20 s enquanto alguém está com a plataforma aberta (uma aba por imobiliária executa o ciclo por vez, com trava no banco).
+- **Custo:** cada fala com IA usa o modelo leve (`OPENAI_MODEL_LEVE`, padrão `gpt-4.1-mini`) e ~1–2 mil tokens. O teto diário por imobiliária é 150 mil tokens (ajustável em **Vida do escritório → ⚙**). Quando acaba, os agentes continuam vivos com falas geradas pelos motores da plataforma (marcadas como *offline*).
+- **Sempre vivos, mesmo com ninguém online (opcional):** adicione na Vercel `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Project Settings → API → *service_role*; fica só no servidor) e `CRON_SECRET` (qualquer senha longa), faça o redeploy e agende uma chamada a cada 5 min. Pelo Supabase (SQL Editor):
+  ```sql
+  create extension if not exists pg_cron;
+  create extension if not exists pg_net;
+  select cron.schedule('minhaimob-sociedade', '*/5 * * * *', $$
+    select net.http_get(url := 'https://SEU-APP.vercel.app/api/sociedade',
+                        headers := jsonb_build_object('Authorization', 'Bearer SEU_CRON_SECRET'));
+  $$);
+  ```
+  (No plano Pro da Vercel dá para usar Vercel Cron no lugar; o Hobby só permite cron diário.)
 
 ### 4. Superadmin (dono da plataforma)
 1. Crie sua conta normalmente em `/index.html`.
@@ -99,13 +114,17 @@ app.html                Plataforma (SPA com rotas por hash)
 office.html             Escritório 3D
 admin.html              Console do superadmin (clientes, planos, assinaturas)
 api/config.js           Vercel: expõe SUPABASE_URL/ANON_KEY
+api/ai.js parse-book.js IA no servidor (OpenAI)
+api/sociedade.js        Ciclo da sociedade de agentes por cron (service role só no servidor)
 assets/css/app.css      Design system (dark/light)
 assets/js/
   config.js db.js ui.js chart.js app.js office.js
   engine/  parser.js (book) · credito.js · scoring.js · match.js · pricing.js
            agents.js · playbook.js · copy.js · seed.js · book-schema.js
   views/   dashboard · pipeline · leads · imoveis · book · ia · credito
-           mercado · marketing · academia · ajustes
+           mercado · marketing · academia · ajustes · sociedade
+  sociedade/ perfis.js (identidade) · mundo.js (KPIs/percepção) · memoria.js
+           fala.js (um turno por agente) · motor.js (ciclo) · navegador.js
 supabase/
   schema.sql            Schema completo + RLS + funções + seed demo
   functions/ai-chat     Chat dos agentes (streaming SSE)

@@ -44,6 +44,10 @@
     },
     "api/parse-book.js": {
       "maxDuration": 60
+    },
+    "api/sociedade.js": {
+      "maxDuration": 60,
+      "includeFiles": "assets/js/**"
     }
   }
 }
